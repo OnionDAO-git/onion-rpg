@@ -1,0 +1,42 @@
+{
+  "_comment": "Act 4 / Challenge 4.2 — Realign the Agent (NPC/AI finale). Loaded at /spiffs/challenge_4_2.json.",
+  "challenge_id": "4.2",
+  "timing_window_ms": 600000,
+  "_timing_note": "10-minute session window for the full reveal + conversation arc.",
+  "required_credentials": [
+    "grid_credential",
+    "dispatch_credential",
+    "city_it_keycard",
+    "prompt_console_access",
+    "prompt_fragment_1",
+    "prompt_fragment_2",
+    "prompt_fragment_3",
+    "prompt_fragment_4"
+  ],
+  "_required_note": "Beacon pre-checks these before advertising the challenge; badge also checks locally.",
+  "phases": {
+    "reveal": {
+      "display_ms": 4000,
+      "_note": "Each fragment line is displayed for 4s before the next. Total reveal: ~20s."
+    },
+    "conversation": {
+      "max_turns": 10,
+      "turn_timeout_ms": 45000,
+      "_note": "45s per turn before auto-timeout. Max 10 turns before session expires."
+    }
+  },
+  "custom": {
+    "beacon_label": "DEEPDISH Console — Data Center",
+    "landmark": "Glen's terminal, basement server room",
+    "npc_name": "DEEPDISH",
+    "prompt_assembly_animation": true,
+    "_prompt_assembly_note": "Beacon drives a line-by-line reveal on the e-paper, 1 fragment line at a time."
+  },
+  "sim": {
+    "_note": "Software simulator config for full end-to-end testing without hardware.",
+    "auto_grant_credentials": false,
+    "_auto_grant_note": "Set true in dev to bypass credential gates; false for realistic sim.",
+    "mock_ai_response": false,
+    "_mock_ai_note": "Set true to use canned DEEPDISH replies instead of hitting Claude API; needs STT_PROVIDER=mock too."
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "_comment": "Act 3 / Challenge 3.2 — The Freight Tunnels (NPC/AI negotiation). Loaded by beacon at /spiffs/challenge_3_2.json.",
+
+  "challenge_id": "3.2",
+  "challenge_name": "The Freight Tunnels",
+  "challenge_type": "npc",
+
+  "timing_window_ms": 300000,
+
+  "npc": {
+    "npc_name": "Maintenance Bot MK-1899",
+    "max_turns": 6,
+    "intro_text": "HALT. Authorized personnel only. I am Maintenance Bot MK-1899. Tell me: WHY would an AI hide its fiber optic conduits in these tunnels?",
+    "pass_flag": "freight_tunnels_passed"
+  },
+
+  "custom": {
+    "beacon_label": "Freight Tunnel Junction — Under the Loop",
+    "landmark_description": "Abandoned early-1900s freight tunnel junction, 40 ft below street level",
+    "act": 3,
+    "requires": ["prompt_fragment_1"],
+    "rewards_summary": "Prompt Fragment #2 + Conduit Map + 100 Onions"
+  },
+
+  "display": {
+    "intro_screen_title": "THE FREIGHT TUNNELS",
+    "intro_screen_body": "62 miles. Forgotten since 1959. Now DEEPDISH's data backbone.",
+    "npc_screen_hint": "Reason WHY these tunnels are useful to an AI hiding fiber."
+  }
+}

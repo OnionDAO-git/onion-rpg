@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "allowJs": true,
+    "checkJs": false,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "baseUrl": "..",
+    "types": ["bun-types"],
+    "paths": {
+      "$lib/shared/*": ["src/lib/shared/*"],
+      "$lib/server/*": ["src/lib/server/*"],
+      "$env/dynamic/private": ["tests/stubs/env.ts"]
+    }
+  },
+  "include": [
+    "./**/*.ts",
+    "../src/lib/**/*.ts"
+  ],
+  "exclude": ["../node_modules", "../build"]
+}

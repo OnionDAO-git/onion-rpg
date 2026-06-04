@@ -1,0 +1,6 @@
+# bun configuration for the ONION RPG server + test runner.
+# See https://bun.sh/docs/runtime/bunfig
+
+[test]
+# Preload the mock environment setup before any test file loads.
+preload = ["./tests/setup.ts"]

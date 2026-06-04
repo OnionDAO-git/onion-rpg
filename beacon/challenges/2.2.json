@@ -1,0 +1,76 @@
+{
+  "_comment": "Act 2 / Challenge 2.2 — The Sorting Machine (merchant/buttons). Loaded by beacon firmware at /spiffs/challenge_2_2.json. Consumed by beacon firmware AND sim/index.ts.",
+
+  "challengeId": "2.2",
+  "beaconIdHint": "b-sorting",
+  "landmark": "USPS Bulk Mail Center (3D-printed sorting machine prop)",
+
+  "timing": {
+    "_comment": "How long the badge has to complete the full session before the machine 'locks' and the operative must walk away and re-approach.",
+    "session_window_ms": 120000,
+    "_comment2": "Per-sequence input window: how long the badge can sit mid-combo before the machine resets the in-progress sequence.",
+    "input_idle_timeout_ms": 15000
+  },
+
+  "merchant_combos": {
+    "_comment": "Each entry is a trade tier. 'sequence' must match impl/act2-2-sorting-machine.ts TRADE_TIERS exactly (server is authoritative for validation; this is the display/UX config).",
+    "tier1_local_route": {
+      "name": "Local Route",
+      "item": "sorting_sprocket",
+      "onion_payout": 30,
+      "sequence": ["up", "up", "select"],
+      "sequence_hint": "UP UP SELECT",
+      "wrong_cost_onions": 10,
+      "display_hint": "Local sort: 5-digit ZIP → carrier route"
+    },
+    "tier2_regional_hub": {
+      "name": "Regional Hub",
+      "item": "conveyor_belt_frag",
+      "onion_payout": 60,
+      "sequence": ["down", "right", "up", "select"],
+      "sequence_hint": "DN R UP SELECT",
+      "wrong_cost_onions": 20,
+      "display_hint": "ZIP+4 → SCF. O'Hare annex."
+    },
+    "tier3_bridge_override": {
+      "name": "Bridge Override Kit",
+      "item": "bridge_override_schematic",
+      "onion_payout": 110,
+      "sequence": ["left", "up", "right", "down", "select"],
+      "sequence_hint": "L UP R DN SELECT",
+      "wrong_cost_onions": 30,
+      "display_hint": "NDC dispatch: 35k flats/hr"
+    }
+  },
+
+  "wrong_attempt_limit": 5,
+
+  "display": {
+    "_comment": "Short strings for any small OLED/LED on the 3D-printed prop.",
+    "idle":    "USPS SORTING\nEnter code to trade",
+    "active":  "ENTER SEQUENCE\nUP/DN/L/R + SEL",
+    "wrong":   "MISROUTE\n-Onions deducted",
+    "locked":  "LOCKED\nToo many misroutes",
+    "success": "TRADE COMPLETE\nPart dispensed"
+  },
+
+  "espnow": {
+    "_comment": "ESP-NOW configuration hints for the beacon firmware. The beacon advertises challengeId '2.2' in BEACON_HELLO.",
+    "beacon_hello_interval_ms": 2000,
+    "channel": 1
+  },
+
+  "sim": {
+    "_comment": "Settings consumed by sim/index.ts software beacon simulator.",
+    "auto_register": true,
+    "lat": 41.8788,
+    "lon": -87.6359,
+    "_comment_location": "Approximate coordinates of the Chicago Main Post Office (433 W Harrison St) for festival map pin."
+  },
+
+  "custom": {
+    "beacon_label": "USPS Sorting Machine",
+    "prop_notes": "3D-print the USPS sorting machine shell. Mount an ESP32-C3 inside. Use the 6-button badge as the 'control panel'. LED strip (white/red) indicates locked/unlocked state. Optional: small OLED I2C display showing current tier status.",
+    "audio_cues": "Optional buzzer: short beep on button press, ascending tones on correct sequence, descending tones + long buzz on wrong sequence, triple beep on trade completion."
+  }
+}

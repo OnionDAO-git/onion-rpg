@@ -1,0 +1,48 @@
+{
+  "_comment": "Act 4 / Challenge 4.1 — The Server Room (boss-tier combat, 3 waves). Loaded by beacon at /spiffs/challenge_4_1.json.",
+
+  "challenge_id": "4.1",
+
+  "timing_window_ms": 600000,
+
+  "required_credentials": [
+    "grid_credential",
+    "dispatch_credential",
+    "city_it_keycard"
+  ],
+
+  "combat": {
+    "enemy_name": "DEEPDISH Watchdog v1.0",
+    "enemy_hp": 150,
+    "op_hp": 120,
+    "waves": 3,
+    "ttl_seconds": 600,
+    "signed_kill_required": false,
+    "wave_intros": {
+      "1": "Watchdog Process Alpha — UPS power-monitoring daemon. Defeat it to force a generator failover.",
+      "2": "Watchdog Process Beta — hot-aisle thermal runaway detector. Cool it down, champ.",
+      "3": "Watchdog Process Gamma — the final hardened guardian. The server logs the killing blow. Fight dirty, champ."
+    }
+  },
+
+  "beacon": {
+    "label": "DEEPDISH Data Center",
+    "landmark": "Loop Colo — 350 E Cermak (framing landmark, not the literal location)",
+    "espnow_channel": 6,
+    "hello_interval_ms": 3000
+  },
+
+  "capabilities": {
+    "server_authoritative_combat": true,
+    "has_subghz": false,
+    "has_voice": false,
+    "note": "Combat is server-authoritative; the server resolves and records every wave including the final kill. A badge may attach optional onion.secure_random entropy. No badge signing (onion.se_sign does not exist)."
+  },
+
+  "display": {
+    "intro_title": "THE SERVER ROOM",
+    "intro_subtitle": "Act 4 — Climax",
+    "enemy_sprite": "watchdog",
+    "bg_pattern": "rack_dots"
+  }
+}

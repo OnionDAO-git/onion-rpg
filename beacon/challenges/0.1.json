@@ -1,0 +1,70 @@
+{
+  "_comment": "Act 0 / Challenge 0.1 — The Ketchup Gauntlet (combat, 1 wave, tutorial). Consumed by beacon firmware and sim. File loaded at /spiffs/challenge_0_1.json.",
+  "challengeId": "0.1",
+  "name": "The Ketchup Gauntlet",
+  "type": "combat",
+  "act": 0,
+
+  "timing": {
+    "window_ms": 120000,
+    "combat_turn_timeout_ms": 30000,
+    "idle_timeout_ms": 60000
+  },
+
+  "combat": {
+    "enemy_name": "Vienna Bob (HOSTILE)",
+    "enemy_hp": 80,
+    "operative_hp": 100,
+    "waves_required": 1,
+    "damage_player_max": 20,
+    "damage_enemy_max": 15,
+    "server_authoritative": true,
+    "_comment_rng": "Combat is server-authoritative: the server generates and records every roll. A badge may attach optional client entropy from onion.secure_random; it never gates the outcome. There is no badge signing (onion.se_sign does not exist)."
+  },
+
+  "screen": {
+    "hostile_trigger_button": "right",
+    "_comment_hostile_trigger": "Pressing RIGHT at the vendor menu = 'order ketchup' -> triggers the ketchup-hostile narrative path.",
+    "normal_order_buttons": ["select", "left", "up"],
+    "_comment_normal": "Any of these at the vendor menu bypasses ketchup narrative but still enters combat (tutorial: both paths lead to combat).",
+    "beacon_label": "VIENNA BOB'S"
+  },
+
+  "subghz": null,
+  "_comment_subghz": "No sub-GHz for this challenge. Sub-GHz jamming/handshake mechanics are used in 2.1 and 3.4.",
+
+  "voice": null,
+  "_comment_voice": "No voice capture for this challenge. Voice challenges begin at 1.1.",
+
+  "merchant": null,
+  "_comment_merchant": "No merchant buttons for this challenge. Merchant UI is introduced in 2.2.",
+
+  "rewards": {
+    "onions": 50,
+    "inventory": ["encased_meat_mk1"],
+    "gauge": 500,
+    "_comment": "Operative registration is also triggered server-side on first win (engine/validate side effect)."
+  },
+
+  "display": {
+    "width_px": 264,
+    "height_px": 176,
+    "color": "bw",
+    "enemy_ascii": [
+      " [VIENNA BOB] ",
+      "  (^_^) HOT DOG CART",
+      "  |___| ARMED & DANGEROUS"
+    ]
+  },
+
+  "sim": {
+    "_comment": "Simulator (sim/) uses these values to emulate the beacon hardware.",
+    "auto_respond_hello": true,
+    "beacon_id": "sim-b-ketchup",
+    "espnow_mac": "DE:AD:BE:EF:00:01",
+    "landmark": "Busted hot dog stand — Vienna Bob's",
+    "lat": 41.8827,
+    "lon": -87.6233,
+    "_comment_location": "Near the Fulton Market district — historically Chicago's meatpacking hub, referenced in the challenge footnote."
+  }
+}

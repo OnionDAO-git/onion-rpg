@@ -1,0 +1,47 @@
+{
+  "_comment": "Act 1 / Challenge 1.2 — Substation Reroute (combat, 3 waves). Loaded by beacon firmware at /spiffs/challenge_1_2.json. Also consumed by the software simulator (sim/).",
+
+  "challengeId": "1.2",
+  "name": "Substation Reroute",
+  "act": 1,
+  "type": "combat",
+
+  "beacon": {
+    "idHint": "b-substation",
+    "landmark": "ComEd North Side Substation",
+    "lat": 41.9585,
+    "lon": -87.7,
+    "_lat_lon_note": "Near the ComEd North Side service territory; adjust to actual festival venue coordinates."
+  },
+
+  "timing_window_ms": 180000,
+  "_timing_note": "3-minute window covers the full 3-wave fight with room for reconnect lag.",
+
+  "combat": {
+    "waves_required": 3,
+    "operative_hp": 100,
+    "enemy_hp_per_wave": [60, 80, 100],
+    "_enemy_hp_note": "Demand spikes escalate: wave 1 (60 HP feeder fault), wave 2 (80 HP loop overload), wave 3 (100 HP main bus spike).",
+    "ttl_seconds": 180,
+    "server_authoritative": true,
+    "_rng_note": "Combat is server-authoritative: the server generates and records the rolls that resolve the fight. A badge may attach optional onion.secure_random entropy, never trusted as the roll itself. No badge signing (onion.se_sign does not exist)."
+  },
+
+  "custom": {
+    "beacon_label": "ComEd Substation — North Side",
+    "enemy_name": "Demand Spike",
+    "flavor": "DEEPDISH has tripped the feeders. Close three breakers to restore power.",
+    "wave_labels": [
+      "Irving Park Feeder",
+      "Albany Park Distribution Loop",
+      "Primary Distribution Bus"
+    ]
+  },
+
+  "sim": {
+    "_comment": "Settings used by sim/ when acting as a software beacon for this challenge.",
+    "auto_beacon_hello_interval_ms": 5000,
+    "espnow_sim_port": 4120,
+    "_port_note": "UDP port the sim listens on for badge ESP-NOW frames (one port per beacon)."
+  }
+}

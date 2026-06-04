@@ -1,0 +1,49 @@
+{
+  "_comment": "Act 2 / Challenge 2.1 — The Loop That Won't Stop (combat + sub-GHz timing). Loaded by beacon/sim at /spiffs/challenge_2_1.json (or referenced by id in sim).",
+
+  "challengeId": "2.1",
+  "act": 2,
+  "name": "The Loop That Won't Stop",
+  "beaconLabel": "L Platform — Control Node",
+  "landmark": "CTA Elevated Loop",
+
+  "phases": ["jam", "combat"],
+
+  "jam": {
+    "_comment": "Sub-GHz signal jam phase. Badge must transmit stop_code within timing_window_ms.",
+    "timing_window_ms": 60000,
+    "freq_hz": 433920000,
+    "stop_code_hex": "DEAD1A1A",
+    "symbol_ms": 500,
+    "relay_fallback": true,
+    "_relay_note": "When badge has no subghz cap, beacon acts as relay: badge sends MERCHANT_INPUT {phase:'jam_relay'} and beacon transmits the stop code itself, then ACKs via CHALLENGE_RESULT {jammed:true}."
+  },
+
+  "combat": {
+    "_comment": "RNG combat phase after a successful jam. One wave vs Door Actuator Daemon.",
+    "enemy_name": "Door Actuator Daemon",
+    "enemy_hp": 60,
+    "operative_hp": 100,
+    "waves_required": 1,
+    "ttl_seconds": 180,
+    "_note": "ttl_seconds caps the fight duration; expired sessions count as a loss."
+  },
+
+  "rewards": {
+    "items": ["transit_pass"],
+    "onions": 90,
+    "gauge_bump": 900
+  },
+
+  "lesson": {
+    "topic": "CTA rail signaling and the elevated Loop",
+    "summary": "Chicago's L has circled downtown since 1897. Four CTA lines share the rectangular elevated Loop. Rail signaling uses SCADA block-detection and cab signals — digital control surfaces that can be compromised.",
+    "deepdish_footnote": "Educational footnote: always secure your SCADA endpoints, champ."
+  },
+
+  "sim": {
+    "_comment": "Simulator-only overrides (sim agent reads these).",
+    "auto_jam_after_ms": 5000,
+    "auto_jam_success": true
+  }
+}

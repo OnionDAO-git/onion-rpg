@@ -1,0 +1,48 @@
+{
+  "_comment": "Act 3 / Challenge 3.4 — The Elevator Hack (Combat + sub-GHz puzzle). Consumed by beacon FW and the simulator. Also stored at /spiffs/challenge_3_4.json on the C3 beacon.",
+
+  "challengeId": "3.4",
+  "beaconIdHint": "b-elevator",
+  "landmark": "City Hall elevator bank, lobby level",
+
+  "timing_window_ms": 90000,
+
+  "subghz": {
+    "_comment": "315 MHz — North-American building-automation / elevator controller band (standard for commercial BAS). Badge must transmit accessCode in this window before combat is unlocked.",
+    "freq_hz": 315000000,
+    "symbol_ms": 300,
+    "access_code_hex": "DEADBEEF",
+    "fallback_auto_open": true,
+    "_fallback_note": "When the badge has no subghz cap the beacon auto-opens the handshake gate after timing_window_ms/3, sets subghzHandshakeDone=true in the relay flags, and proceeds to combat. Game remains fully playable on base firmware."
+  },
+
+  "combat": {
+    "enemy_name": "Intrusion Detection System v2.3",
+    "enemy_hp": 60,
+    "op_hp": 100,
+    "waves": 2,
+    "ttl_seconds": 90,
+    "_waves_note": "Each wave clears one alarm tier. Two waves = two BAS security layers defeated."
+  },
+
+  "custom": {
+    "beacon_label": "City IT Floor Elevator",
+    "floor_label": "Floor 47 — City IT",
+    "rewards_preview": [
+      "City IT Keycard",
+      "Prompt Fragment #4",
+      "150 Onions"
+    ],
+    "requires": ["dispatch_credential"],
+    "_requires_note": "Operative must hold the OEMC Dispatch Credential (challenge 3.3) to begin."
+  },
+
+  "sim": {
+    "_comment": "Simulator-specific overrides. The bun/TypeScript sim reads this block.",
+    "beacon_id": "sim-b-elevator-3.4",
+    "espnow_mac": "AA:BB:CC:DD:03:04",
+    "lat": 41.8836,
+    "lon": -87.6319,
+    "_location_note": "Approximate Chicago City Hall / Loop coordinates for the sim map."
+  }
+}

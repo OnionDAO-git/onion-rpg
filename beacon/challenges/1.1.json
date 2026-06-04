@@ -1,0 +1,38 @@
+{
+  "_comment": "Act 1 / Challenge 1.1 — Malört Fountains (voice dialogue). Beacon firmware loads this from /spiffs/challenge_1_1.json at boot.",
+
+  "challenge_id": "1.1",
+  "challenge_type": "dialogue",
+  "act": 1,
+
+  "timing_window_ms": 90000,
+
+  "required_capabilities": ["voice"],
+
+  "voice": {
+    "capture_duration_ms": 5000,
+    "language": "en",
+    "prompt": "Speak: intake, crib, tunnel, Jardine plant, grid",
+    "stage_keywords": ["intake", "crib", "tunnel", "jardine", "grid"],
+    "audio_upload_endpoint": "/api/voice",
+    "upload_content_type": "audio/wav"
+  },
+
+  "espnow_fallback": {
+    "note": "When badge caps.voice is false the beacon captures audio via its own microphone (if present), uploads the blob to audio_upload_endpoint, and passes the resulting ref in VOICE_CAPTURE_SUBMIT.ref over ESP-NOW.",
+    "beacon_capture_duration_ms": 5000
+  },
+
+  "custom": {
+    "beacon_label": "Drinking Fountain",
+    "npc_name": "Water Reclamation Engineer",
+    "malort_dispense_on_fail": true,
+    "lesson_topic": "Lake Michigan water-treatment: intake cribs, Jardine plant, distribution grid",
+    "landmark_hint": "Drinking fountain (currently dispensing Malört by DEEPDISH order)"
+  },
+
+  "sim": {
+    "mock_transcript": "intake crib tunnel jardine plant grid",
+    "note": "Simulator injects mock_transcript as a VOICE_CAPTURE_SUBMIT.t body so the full server validate() path runs without hardware. Override via STT_MOCK_TRANSCRIPT env var."
+  }
+}

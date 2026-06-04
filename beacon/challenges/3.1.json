@@ -1,0 +1,47 @@
+{
+  "_comment": "Act 3 / Challenge 3.1 — Descent into the Deep Tunnel (endurance combat). Loaded by beacon/sim at /spiffs/challenge_3_1.json.",
+
+  "_mechanic": [
+    "Endurance RNG combat vs 'The Rising Water' (damage-over-time, 3 waves).",
+    "Operative must reach the beacon AND clear all waves before timing_window_ms elapses.",
+    "Session is server-tracked with expiresAt = now + timing_window_ms; expired status maps to TIMEOUT failure.",
+    "No sub-GHz or voice primitives required.",
+    "Combat is server-authoritative: the server generates and records every roll. A badge may attach optional onion.secure_random entropy; there is no badge signing."
+  ],
+
+  "challenge_id": "3.1",
+  "challenge_name": "Descent into the Deep Tunnel",
+  "act": 3,
+  "type": "combat",
+
+  "timing_window_ms": 180000,
+
+  "combat": {
+    "enemy_name": "The Rising Water",
+    "enemy_hp": 60,
+    "op_hp": 90,
+    "waves": 3,
+    "player_max_dmg": 20,
+    "enemy_max_dmg": 15,
+    "_damage_note": "Damage formula from engine/combat.ts: Math.floor(roll/255 * maxDmg) + 1"
+  },
+
+  "_no_subghz": "3.1 is pure combat; no sub-GHz handshake required (unlike 2.1, 3.4).",
+  "_no_voice": "3.1 is pure combat; no voice capture required (unlike 1.1, 2.3, 3.3).",
+
+  "custom": {
+    "beacon_label": "TARP Deep Tunnel Access Point",
+    "landmark": "Thornton Composite Quarry area / MWRD shaft",
+    "enemy_display_name": "The Rising Water",
+    "lesson_topic": "TARP / Chicago Deep Tunnel (stormwater management)",
+    "wave_taunts": [
+      "Fun fact: Chicago is nearly FLAT. 3.5 billion gallons of runoff per inch of rain. It all comes here.",
+      "TARP took 40 years to build. 109 miles, 3 reservoirs. I'm flooding all of it. Move, champ.",
+      "Still here? The water reversal helps, but COMBINED SEWER OVERFLOW is why Deep Tunnel exists. Keep running."
+    ],
+    "wave_cleared_taunt": "Not bad. Water's slowed for now. But there are three reservoirs. I've got valves on all of them.",
+    "success_text": "You made it. Here's your Sump Pump. And Fragment 1. Don't say I never taught you anything.",
+    "failure_text": "Water got ya. That's what happens when you don't respect the infrastructure. Try again.",
+    "timeout_text": "Ran out of time. TARP fills fast during storm events. Commit or drown, pal."
+  }
+}

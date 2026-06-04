@@ -1,0 +1,64 @@
+{
+  "_comment": "Act 3 / Challenge 3.3 — OEMC Blackout (voice triage). Loaded by beacon at /spiffs/challenge_3_3.json. Also consumed by sim/.",
+
+  "challenge_id": "3.3",
+  "challenge_name": "OEMC Blackout",
+  "challenge_type": "dialogue",
+
+  "timing_window_ms": 180000,
+
+  "voice": {
+    "capture_duration_ms": 5000,
+    "upload_endpoint": "/api/voice",
+    "content_type": "audio/wav",
+    "language": "en",
+    "on_badge_fallback": true,
+    "_comment": "When on-badge caps.voice is false the beacon captures audio via its own mic or sim stdin and uploads via upload_endpoint, then passes the returned ref in VOICE_CAPTURE_SUBMIT.ref. on_badge_fallback=true means the Lua screen sends an empty VOICE_CAPTURE_SUBMIT to signal 'player is ready'; the beacon drives the capture + upload cycle and pushes VOICE_RESULT back."
+  },
+
+  "triage": {
+    "call_count": 4,
+    "pass_threshold": 3,
+    "priority_categories": [
+      {
+        "id": "PRIORITY_1",
+        "label": "Priority 1",
+        "description": "Immediate life threat — lights and sirens"
+      },
+      {
+        "id": "PRIORITY_2",
+        "label": "Priority 2",
+        "description": "Urgent, expedited response"
+      },
+      {
+        "id": "PRIORITY_3",
+        "label": "Priority 3",
+        "description": "Routine — queue dispatch"
+      },
+      {
+        "id": "PRIORITY_4",
+        "label": "Priority 4",
+        "description": "Information only — log and close"
+      }
+    ]
+  },
+
+  "sim": {
+    "mock_transcripts": [
+      "priority 1",
+      "priority 1",
+      "priority 2",
+      "priority 3"
+    ],
+    "_comment": "sim uses these transcripts in order when STT_PROVIDER=mock, one per triage call. Indices match TRIAGE_CALLS order in content/act3-3-oemc-blackout.ts."
+  },
+
+  "custom": {
+    "beacon_label": "OEMC Dispatch Center",
+    "landmark": "Office of Emergency Management and Communications (simulated)",
+    "npc_name": "Dispatcher Rodriguez",
+    "deepdish_mode": "dialogue",
+    "display_call_on_screen": true,
+    "_comment": "display_call_on_screen=true tells the badge/sim to display the call description text on-screen in addition to speaking it, since not all players may catch every spoken word."
+  }
+}

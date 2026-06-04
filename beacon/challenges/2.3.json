@@ -1,0 +1,47 @@
+{
+  "_comment": "Act 2 / Challenge 2.3 — Bascule Standoff (voice + combat). Loaded at /spiffs/challenge_2_3.json by beacon-fw and sim/index.ts.",
+
+  "challenge_id": "2.3",
+  "beacon_id_hint": "b-bascule",
+  "landmark": "Michigan Avenue Bascule Bridge (stuck mid-raise)",
+
+  "timing_window_ms": 300000,
+
+  "phases": ["voice", "combat"],
+
+  "voice": {
+    "_comment": "Voice phase: operative speaks the four-step lowering sequence.",
+    "capture_ms": 5000,
+    "language": "en",
+    "upload_route": "/api/voice",
+    "expected_steps": [
+      { "keyword": "lock traffic",         "label": "lock traffic (step 1)" },
+      { "keyword": "release counterweight", "label": "release counterweight (step 2)" },
+      { "keyword": "lower leaf",            "label": "lower leaf (step 3)" },
+      { "keyword": "secure locks",          "label": "secure locks (step 4)" }
+    ],
+    "match_threshold": 0.75,
+    "cap_fallback": "beacon_mic",
+    "_fallback_note": "When caps.voice is false, the beacon's own mic captures audio, uploads blob to /api/voice out-of-band, passes ref in VOICE_CAPTURE_SUBMIT body."
+  },
+
+  "combat": {
+    "_comment": "Combat phase: one RNG wave against the Bridge Tender Construct.",
+    "enemy_name": "Bridge Tender Construct",
+    "enemy_hp": 60,
+    "op_hp": 100,
+    "waves_required": 1,
+    "combat_timeout_ms": 180000,
+    "cap_fallback": "server_rng",
+    "_fallback_note": "When caps.seAttest is false, the server rolls RNG itself. When seRng + seSign are both present, badge produces a signed roll the server verifies."
+  },
+
+  "custom": {
+    "beacon_label": "Michigan Ave Bascule Bridge",
+    "theme": "bascule_bridge",
+    "requires": ["reversal_map"],
+    "lesson": "Chicago has 50+ movable bascule bridges. A counterweight equal to the leaf weight makes raising trivial. Sequence: lock traffic, release counterweight, lower leaf, secure locks.",
+    "subghz": null,
+    "_subghz_note": "No sub-GHz mini-event for 2.3 (that is 2.1's mechanic). Voice + combat only."
+  }
+}

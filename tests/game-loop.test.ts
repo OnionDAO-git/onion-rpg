@@ -1,0 +1,765 @@
+/**
+ * tests/game-loop.test.ts — End-to-end game loop tests.
+ *
+ * Coverage (per task brief):
+ *   1. Operative registration + Act 0 Ketchup Gauntlet combat E2E
+ *      (badge sim → beacon sim relay → server engine → reward recorded)
+ *   2. Voice challenge (mocked STT) — 1.1 Malört Fountains
+ *   3. NPC challenge (mocked Claude) — act1-3 River Ran Backwards
+ *   4. Progression gating — Act 4 blocked without 3 credentials,
+ *      allowed with all 3
+ *
+ * External services (Postgres, Anthropic API, Onion DAO API) are mocked.
+ * mock.module() uses absolute paths so bun intercepts relative imports
+ * within the server modules correctly.
+ */
+
+import { mock, describe, it, expect, beforeEach, beforeAll } from 'bun:test';
+import { randomUUID } from 'crypto';
+import { fileURLToPath } from 'url';
+import { resolve, dirname } from 'path';
+
+// Project root, needed to build absolute mock paths
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STEP 1 — Install all mocks (synchronous, before any dynamic imports)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── $env/dynamic/private (SvelteKit virtual module) ──────────────────────
+mock.module('$env/dynamic/private', () => ({
+  env: new Proxy({} as Record<string, string | undefined>, {
+    get(_t, p: string) { return process.env[p]; }
+  })
+}));
+
+// ── In-memory database ────────────────────────────────────────────────────
+let _db = freshStore();
+function freshStore() {
+  return {
+    operatives: new Map<string, any>(),
+    game_state: new Map<string, any>(),
+    inventory: new Map<string, any>(),      // key: `${opId}:${catalogId}`
+    challenge_attempts: new Map<string, any>(),
+    combat_sessions: new Map<string, any>(),
+    onion_rewards: new Map<string, any>(),  // key: externalId
+    gauge: { current: 0, max: 100000 }
+  };
+}
+function resetDb() { _db = freshStore(); }
+
+// Sentinel values returned by sql`NULL` and sql`now()` sub-expressions
+const SQL_NULL = null;
+const SQL_NOW = () => new Date().toISOString();
+
+function buildSql() {
+  function sql(strings: TemplateStringsArray, ...values: unknown[]): any {
+    const raw = strings.raw.reduce((a, s, i) => a + (i > 0 ? `§${i - 1}§` : '') + s);
+    const n = raw.replace(/\s+/g, ' ').trim().toLowerCase();
+
+    // sql`NULL` and sql`now()` — raw SQL sub-expressions used as values
+    if (n === 'null') return SQL_NULL;
+    if (n.startsWith('now()')) return SQL_NOW();
+
+    // operatives
+    if (n.startsWith('insert into operatives')) {
+      const [hw, onionId] = values as [string, number | null];
+      for (const op of _db.operatives.values()) {
+        if (op.hardwareId === hw) { op.lastSeenAt = new Date().toISOString(); if (onionId != null) op.onionId = onionId; return [op]; }
+      }
+      const op = { id: randomUUID(), hardwareId: hw, onionId: onionId ?? null, username: null, callsign: null, attestPubkey: null, registered: false, createdAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() };
+      _db.operatives.set(op.id, op); return [op];
+    }
+    if (n.includes('update operatives set') && n.includes('registered')) {
+      const id = values[values.length - 1] as string; const op = _db.operatives.get(id); if (!op) return [];
+      if (values[0] != null) op.onionId = values[0]; if (values[1] != null) op.username = values[1]; if (values[2] != null) op.callsign = values[2]; if (values[3] != null) op.attestPubkey = values[3];
+      op.registered = true; op.lastSeenAt = new Date().toISOString(); return [op];
+    }
+    if (n.includes('select * from operatives where id')) { return [_db.operatives.get(values[0] as string) ?? null].filter(Boolean); }
+    if (n.includes('select username from operatives where id')) { const op = _db.operatives.get(values[0] as string); return op ? [{ username: op.username }] : []; }
+    if (n.includes('select attest_pubkey from operatives where id')) { const op = _db.operatives.get(values[0] as string); return op ? [{ attestPubkey: op.attestPubkey }] : []; }
+
+    // game_state
+    if (n.includes('insert into game_state') && n.includes('on conflict')) {
+      const id = values[0] as string;
+      if (!_db.game_state.has(id)) _db.game_state.set(id, { operativeId: id, currentAct: 0, challengeStatus: {}, hp: 100, flags: {}, updatedAt: new Date().toISOString() }); return [];
+    }
+    // Both the full select (with hp/flags) and the act-only select (maybeAdvanceAct)
+    if (n.includes('select current_act') && n.includes('game_state') && n.includes('operative_id')) {
+      return [_db.game_state.get(values[0] as string) ?? null].filter(Boolean);
+    }
+    if (n.includes('update game_state set') && n.includes('challenge_status')) {
+      const id = values[values.length - 1] as string; const gs = _db.game_state.get(id); if (!gs) return [];
+      const cid = (values[0] as string).replace(/[{}]/g, '');
+      if (n.includes('"cleared"')) gs.challengeStatus = { ...gs.challengeStatus, [cid]: 'cleared' };
+      else if (gs.challengeStatus[cid] !== 'cleared') gs.challengeStatus = { ...gs.challengeStatus, [cid]: 'in_progress' };
+      gs.updatedAt = new Date().toISOString(); return [];
+    }
+    if (n.includes('update game_state set') && n.includes('current_act')) {
+      const gs = _db.game_state.get(values[1] as string); if (gs) { gs.currentAct = values[0]; gs.updatedAt = new Date().toISOString(); } return [];
+    }
+    if (n.includes('update game_state set') && n.includes('flags')) {
+      const gs = _db.game_state.get(values[1] as string); if (gs) { gs.flags = { ...gs.flags, ...(values[0] as any) }; gs.updatedAt = new Date().toISOString(); } return [];
+    }
+
+    // inventory
+    if (n.includes('insert into inventory')) {
+      const [opId, catalogId, kind, qty, backing, backingRef] = values as [string, string, string, number, string, string | null];
+      const key = `${opId}:${catalogId}`; const ex = _db.inventory.get(key);
+      if (ex) { if (kind === 'item') ex.qty += qty; return [ex]; }
+      const row = { id: randomUUID(), operativeId: opId, catalogId, kind, qty, metadata: {}, backing, backingRef: backingRef ?? null, acquiredAt: new Date().toISOString() };
+      _db.inventory.set(key, row); return [row];
+    }
+    if (n.includes('select catalog_id from inventory where operative_id')) {
+      return [..._db.inventory.entries()].filter(([k]) => k.startsWith((values[0] as string) + ':')).map(([, r]) => ({ catalogId: r.catalogId }));
+    }
+    if (n.includes('select * from inventory where operative_id')) {
+      return [..._db.inventory.entries()].filter(([k]) => k.startsWith((values[0] as string) + ':')).map(([, r]) => r);
+    }
+
+    // challenge_attempts
+    if (n.includes('insert into challenge_attempts')) {
+      const [opId, challengeId, challengeType, beaconId] = values as [string, string, string, string | null];
+      const a = { id: randomUUID(), operativeId: opId, challengeId, challengeType, beaconId: beaconId ?? null, status: 'started', input: null, result: null, startedAt: new Date().toISOString(), resolvedAt: null };
+      _db.challenge_attempts.set(a.id, a); return [{ id: a.id }];
+    }
+    if (n.includes('update challenge_attempts set')) {
+      const id = values[values.length - 2] as string; const a = _db.challenge_attempts.get(id);
+      if (a) { a.status = values[0]; a.input = values[1]; a.result = values[2]; if (a.status !== 'started') a.resolvedAt = new Date().toISOString(); } return [];
+    }
+    if (n.includes('select operative_id, id from challenge_attempts') && n.includes("'started'")) {
+      for (const a of [..._db.challenge_attempts.values()].reverse()) { if (a.challengeId === (values[0] as string) && a.status === 'started') return [{ operativeId: a.operativeId, id: a.id }]; }
+      return [];
+    }
+
+    // combat_sessions
+    if (n.includes('insert into combat_sessions')) {
+      const [opId, cid, attemptId, nonce, eHp, oHp, waves] = values as [string, string, string | null, string, number, number, number];
+      const s = { id: randomUUID(), operativeId: opId, challengeId: cid, attemptId: attemptId ?? null, serverNonce: nonce, enemyHp: eHp, operativeHp: oHp, wave: 0, wavesRequired: waves, rolls: [], status: 'active', createdAt: new Date().toISOString(), expiresAt: null, resolvedAt: null };
+      _db.combat_sessions.set(s.id, s); return [s];
+    }
+    if (n.includes('select * from combat_sessions where id') && n.includes('for update')) { return [_db.combat_sessions.get(values[0] as string) ?? null].filter(Boolean); }
+    if (n.includes('select id, operative_id, server_nonce from combat_sessions') && n.includes("'active'")) {
+      for (const s of [..._db.combat_sessions.values()].reverse()) { if (s.challengeId === (values[0] as string) && s.status === 'active') return [{ id: s.id, operativeId: s.operativeId, serverNonce: s.serverNonce }]; }
+      return [];
+    }
+    if (n.includes('select * from combat_sessions') && n.includes('order by created_at desc limit 1')) {
+      const all = [..._db.combat_sessions.values()].filter(s => s.operativeId === (values[0] as string) && s.challengeId === (values[1] as string)).reverse();
+      return all.length > 0 ? [all[0]] : [];
+    }
+    if (n.includes('update combat_sessions set') && n.includes('status') && !n.includes("'expired'")) {
+      const id = values[values.length - 1] as string; const s = _db.combat_sessions.get(id);
+      if (s) { s.enemyHp = values[0]; s.operativeHp = values[1]; s.wave = values[2]; s.rolls = values[3]; s.status = values[4]; if (s.status !== 'active') s.resolvedAt = new Date().toISOString(); }
+      return s ? [s] : [];
+    }
+    if (n.includes("status = 'expired'")) {
+      const s = _db.combat_sessions.get(values[0] as string); if (s) { s.status = 'expired'; s.resolvedAt = new Date().toISOString(); } return s ? [s] : [];
+    }
+
+    // onion_rewards
+    if (n.includes('select id, status, onion_request_id from onion_rewards where external_id')) {
+      const r = _db.onion_rewards.get(values[0] as string); return r ? [{ id: r.id, status: r.status, onionRequestId: r.onionRequestId ?? null }] : [];
+    }
+    if (n.includes('insert into onion_rewards')) {
+      const [opId, cid, rt, amount, extId] = values as [string, string, string, number, string];
+      if (_db.onion_rewards.has(extId)) return [];
+      const row = { id: randomUUID(), operativeId: opId, challengeId: cid, requestType: rt, amount, externalId: extId, onionRequestId: null, status: 'pending', error: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      _db.onion_rewards.set(extId, row); return [{ id: row.id }];
+    }
+    if (n.includes('update onion_rewards set') && n.includes('onion_request_id')) {
+      const id = values[values.length - 1] as string;
+      for (const r of _db.onion_rewards.values()) { if (r.id === id) { r.onionRequestId = values[0]; r.status = values[1]; r.updatedAt = new Date().toISOString(); } } return [];
+    }
+    if (n.includes('update onion_rewards')) {
+      const id = values[values.length - 1] as string;
+      for (const r of _db.onion_rewards.values()) { if (r.id === id) { r.status = values[0]; if (values[1]) r.error = values[1]; r.updatedAt = new Date().toISOString(); } } return [];
+    }
+
+    // onion_supply_gauge
+    if (n.includes('select current, max from onion_supply_gauge')) { return [{ current: _db.gauge.current, max: _db.gauge.max }]; }
+    if (n.includes('update onion_supply_gauge')) { _db.gauge.current = Math.min(_db.gauge.max, _db.gauge.current + (values[0] as number)); return [{ current: _db.gauge.current, max: _db.gauge.max }]; }
+
+    console.warn(`[db-mock] unhandled: ${n.slice(0, 120)}`);
+    return [];
+  }
+  sql.json = (v: unknown) => v;
+  sql.unsafe = () => [];
+  return sql;
+}
+
+// Use absolute paths so bun intercepts relative imports from server modules
+mock.module(`${ROOT}/src/lib/server/db/index`, () => ({ sql: buildSql() }));
+
+// ── Challenge registry (no import.meta.glob) ──────────────────────────────
+let _regMap = new Map<string, any>();
+mock.module(`${ROOT}/src/lib/server/challenges/registry`, () => ({
+  registerChallenge(d: any) { if (!_regMap.has(d.id)) _regMap.set(d.id, d); },
+  getChallenge(id: string) { return _regMap.get(id); },
+  allChallenges() { return [..._regMap.values()].sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true })); },
+  challengesForAct(act: number) { return [..._regMap.values()].filter((c: any) => c.act === act); }
+}));
+
+// ── Onion DAO client mock ─────────────────────────────────────────────────
+const _mockRewards: Array<{ externalId: string; amount: number }> = [];
+function getMockRewards() { return [..._mockRewards]; }
+function clearMockRewards() { _mockRewards.length = 0; }
+
+mock.module(`${ROOT}/src/lib/server/onion/client`, () => ({
+  createRequest: async (req: any) => { _mockRewards.push({ externalId: req.externalId, amount: req.amount }); return { id: `mock-${req.externalId}`, status: 'pending' }; },
+  getRequest: async (id: string) => ({ id, status: 'pending', amount: 0, requestType: 'transfer', currencyMode: null, solanaSignature: null, error: null }),
+  verifyCallbackSignature: () => true,
+  getProfile: async () => null
+}));
+
+// ── Storyteller mock ──────────────────────────────────────────────────────
+let _npcQueue: Array<{ passed: boolean; reply: string; reasoning?: string }> = [];
+let _npcDefault = true;
+function queueNpcResponse(r: { passed: boolean; reply: string; reasoning?: string }) { _npcQueue.push(r); }
+function clearNpcQueue() { _npcQueue.length = 0; }
+function setNpcDefault(v: boolean) { _npcDefault = v; }
+function nextNpc() { return _npcQueue.shift() ?? { passed: _npcDefault, reply: _npcDefault ? 'Correct, champ.' : 'Nope, pal.', reasoning: 'mock' }; }
+
+mock.module(`${ROOT}/src/lib/server/ai/storyteller`, () => ({
+  npcTurn: async () => nextNpc(),
+  reactToMove: async () => ({ text: 'mock reaction' }),
+  finaleConversation: async () => ({ won: _npcDefault, reply: 'Now do you wanna learn about the sewers, champ?', reasoning: 'mock' }),
+  challengeIntro: async () => 'DEEPDISH mock intro.',
+  modelFor: (mode: string) => mode === 'finale' ? 'claude-opus-4-8' : 'claude-sonnet-4-6',
+  DEEPDISH_SYSTEM_PROMPT: 'MOCK'
+}));
+
+// ── STT mock ──────────────────────────────────────────────────────────────
+const _blobStore = new Map<string, Uint8Array>();
+
+mock.module(`${ROOT}/src/lib/server/ai/stt`, () => ({
+  getSttProvider: () => ({ name: 'mock', transcribe: async () => ({ transcript: process.env['STT_MOCK_TRANSCRIPT'] ?? '', confidence: 1, language: 'en' }) }),
+  normalizeTranscript: (t: string) => t.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim(),
+  matchSequence: (transcript: string, steps: any[], opts?: { threshold?: number }) => {
+    const thr = opts?.threshold ?? 0.8;
+    const norm = transcript.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+    let cursor = 0, matchedCount = 0, firstMissingIndex = -1;
+    for (let i = 0; i < steps.length; i++) {
+      const cands = [steps[i].keyword, ...(steps[i].aliases ?? [])].map((s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim());
+      let bp = -1;
+      for (const c of cands) { if (!c) continue; const p = norm.indexOf(c, cursor); if (p !== -1 && (bp === -1 || p < bp)) bp = p; }
+      if (bp !== -1) { const m = cands.find((c: string) => norm.indexOf(c, cursor) === bp)!; cursor = bp + m.length; matchedCount++; }
+      else if (firstMissingIndex === -1) firstMissingIndex = i;
+    }
+    const score = steps.length > 0 ? matchedCount / steps.length : 1;
+    return { passed: score >= thr, matchedCount, totalCount: steps.length, score, firstMissingIndex: matchedCount === steps.length ? -1 : firstMissingIndex, missingLabel: undefined };
+  },
+  storeBlobRef: (ref: string, audio: Uint8Array) => { _blobStore.set(ref, audio); },
+  consumeBlobRef: (ref: string) => { const b = _blobStore.get(ref); _blobStore.delete(ref); return b ?? null; }
+}));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STEP 2 — Dynamic imports after mocks (resolved module paths)
+// ═══════════════════════════════════════════════════════════════════════════
+
+let resolveOperative: any, beginChallenge: any, submitChallenge: any,
+    canBegin: any, getGameState: any, applyRewards: any;
+let openCombat: any, applyRoll: any;
+let grantItem: any, listCatalogIds: any;
+let getGauge: any;
+let getChallenge: any;
+let encodeMessage: any, decodeFrame: any, Reassembler: any, MsgType: any;
+let SimChannel: any, VirtualBadge: any;
+
+beforeAll(async () => {
+  // Engine modules (use relative imports internally; mocked by absolute paths above)
+  ({ resolveOperative, beginChallenge, submitChallenge, canBegin, getGameState, applyRewards } =
+    await import(`${ROOT}/src/lib/server/engine/index`));
+  ({ openCombat, applyRoll } = await import(`${ROOT}/src/lib/server/engine/combat`));
+  ({ grantItem, listCatalogIds } = await import(`${ROOT}/src/lib/server/engine/inventory`));
+  ({ getGauge } = await import(`${ROOT}/src/lib/server/onion/gauge`));
+  ({ getChallenge } = await import(`${ROOT}/src/lib/server/challenges/registry`));
+
+  // Load challenge impls — each calls registerChallenge() as a side effect
+  await import(`${ROOT}/src/lib/server/challenges/impl/act0-1-ketchup-gauntlet`);
+  await import(`${ROOT}/src/lib/server/challenges/impl/act1-1-malort-fountains`);
+  await import(`${ROOT}/src/lib/server/challenges/impl/act1-3-river-ran-backwards`);
+  await import(`${ROOT}/src/lib/server/challenges/impl/act4-1-server-room`);
+
+  // Protocol + sim (no SvelteKit deps — safe to import directly)
+  ({ encodeMessage, decodeFrame, Reassembler, MsgType } =
+    await import(`${ROOT}/src/lib/shared/protocol`));
+  ({ SimChannel } = await import(`${ROOT}/sim/transport`));
+  ({ VirtualBadge } = await import(`${ROOT}/sim/badge`));
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// IN-PROCESS RELAY (mirrors /api/relay dispatch)
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function inProcessRelay(beaconId: string, frames: string[]): Promise<string[]> {
+  const out: string[] = [];
+  const asms = new Map<number, any>();
+  // Encode using the SAME msgId as the request for proper request/response correlation
+  const enc = (t: any, id: number, body: unknown) =>
+    encodeMessage(t, id, body).map((f: any) => Buffer.from(f).toString('base64'));
+  const err = (id: number, code: string, msg?: string) => enc(MsgType.ERROR, id, { code, msg });
+
+  async function dispatch(type: any, msgId: number, body: unknown): Promise<string[]> {
+    if (type === MsgType.OPERATIVE_IDENTIFY) {
+      const b = body as any;
+      if (!b?.h) return err(msgId, 'BAD_REQUEST');
+      const op = await resolveOperative(b.h, b.o);
+      const gs = await getGameState(op.id);
+      const inv = [..._db.inventory.entries()].filter(([k]) => k.startsWith(op.id + ':')).map(([, r]) => r);
+      return enc(MsgType.IDENTIFY_ACK, msgId, { id: op.id, registered: op.registered, callsign: op.callsign, act: gs?.currentAct ?? 0, hp: gs?.hp ?? 100, challengeStatus: gs?.challengeStatus ?? {}, flags: gs?.flags ?? {}, inventory: inv.map((i: any) => ({ id: i.catalogId, k: i.kind, q: i.qty })) });
+    }
+    if (type === MsgType.CHALLENGE_BEGIN) {
+      const b = body as any;
+      if (!b?.c || !b?.h) return err(msgId, 'BAD_REQUEST');
+      const op = await resolveOperative(b.h);
+      try {
+        const { attemptId, content } = await beginChallenge(op.id, b.c, beaconId);
+        return enc(MsgType.CHALLENGE_INTRO, msgId, { attemptId, challengeId: b.c, content });
+      } catch (e) { return err(msgId, 'GATED', e instanceof Error ? e.message : String(e)); }
+    }
+    if (type === MsgType.COMBAT_ROLL_REQUEST) {
+      const b = body as any;
+      if (!b?.c) return err(msgId, 'BAD_REQUEST');
+      let srow: any = null;
+      for (const s of [..._db.combat_sessions.values()].reverse()) { if (s.challengeId === b.c && s.status === 'active') { srow = s; break; } }
+      if (!srow) return err(msgId, 'NO_SESSION');
+      const op = _db.operatives.get(srow.operativeId);
+      const inRoll = b.roll ? { wave: b.roll.w, roll: b.roll.r, dmg: b.roll.d, sig: b.roll.sig } : undefined;
+      const session = await applyRoll(srow.id, inRoll, op?.attestPubkey ?? undefined);
+      return enc(MsgType.COMBAT_ROLL_RESPONSE, msgId, { s: session.id, n: session.serverNonce, enemyHp: session.enemyHp, opHp: session.operativeHp, wave: session.wave, wavesReq: session.wavesRequired, st: session.status });
+    }
+    if (type === MsgType.VOICE_CAPTURE_SUBMIT) {
+      const b = body as any;
+      if (!b?.c) return err(msgId, 'BAD_REQUEST');
+      let attempt: any = null;
+      for (const a of [..._db.challenge_attempts.values()].reverse()) { if (a.challengeId === b.c && a.status === 'started') { attempt = a; break; } }
+      if (!attempt) return err(msgId, 'NO_SESSION');
+      const input = b.t ? { t: b.t } : b.ref ? { ref: b.ref } : {};
+      const result = await submitChallenge(attempt.operativeId, b.c, input, attempt.id);
+      return enc(MsgType.CHALLENGE_RESULT, msgId, { passed: result.passed, message: result.message, continued: result.continued ?? false });
+    }
+    if (type === MsgType.NPC_DIALOGUE_TURN) {
+      const b = body as any;
+      if (!b?.c || !b?.t) return err(msgId, 'BAD_REQUEST');
+      let attempt: any = null;
+      for (const a of [..._db.challenge_attempts.values()].reverse()) { if (a.challengeId === b.c && a.status === 'started') { attempt = a; break; } }
+      if (!attempt) return err(msgId, 'NO_SESSION');
+      const result = await submitChallenge(attempt.operativeId, b.c, { t: b.t, s: b.s, transcript: [] }, attempt.id);
+      return enc(MsgType.NPC_DIALOGUE_REPLY, msgId, { reply: result.message, done: result.passed || !result.continued, passed: result.passed });
+    }
+    return err(msgId, 'UNSUPPORTED');
+  }
+
+  for (const b64 of frames) {
+    let frame;
+    try { frame = decodeFrame(Buffer.from(b64, 'base64')); } catch { out.push(...err(0, 'DECODE_ERROR')); continue; }
+    let asm = asms.get(frame.msgId);
+    if (!asm) { asm = new Reassembler(); asms.set(frame.msgId, asm); }
+    const msg = asm.push(frame);
+    if (msg) {
+      asms.delete(frame.msgId);
+      try { out.push(...await dispatch(msg.type, msg.msgId, msg.body)); }
+      catch (e) { out.push(...err(msg.msgId, 'ENGINE_ERROR', String(e))); }
+    }
+  }
+  return out;
+}
+
+// ── Fetch interceptor (SimBeacon's relayToServer → inProcessRelay) ────────
+const _origFetch = global.fetch;
+(global as any).fetch = async (input: any, init?: any) => {
+  const url = typeof input === 'string' ? input : input?.url ?? '';
+  if (url.includes('/api/relay')) {
+    const body = JSON.parse(init?.body ?? '{}') as any;
+    const frames = await inProcessRelay(body.beaconId, body.frames);
+    return new Response(JSON.stringify({ frames }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
+  return _origFetch(input, init);
+};
+
+// ── Sim beacon helper ─────────────────────────────────────────────────────
+function makeRelayBeacon(channel: any, beaconMac: string, beaconId: string, challengeId: string) {
+  const peer = channel.create(beaconMac);
+  for (const f of encodeMessage(MsgType.BEACON_HELLO, 1, { b: beaconId, c: challengeId, m: beaconMac })) {
+    peer.send('ff:ff:ff:ff:ff:ff', f);
+  }
+  peer.onReceive(async (srcMac: string, rawFrame: Uint8Array) => {
+    const respFrames = await inProcessRelay(beaconId, [Buffer.from(rawFrame).toString('base64')]);
+    for (const b64 of respFrames) peer.send(srcMac, Buffer.from(b64, 'base64'));
+  });
+  return peer;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUITE 1 — Registration + Act 0 Ketchup Gauntlet combat
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Act 0 — Ketchup Gauntlet (registration + combat)', () => {
+  beforeEach(() => { resetDb(); clearMockRewards(); clearNpcQueue(); setNpcDefault(true); });
+
+  it('resolveOperative creates a new operative row', async () => {
+    const op = await resolveOperative('hw-001');
+    expect(op.hardwareId).toBe('hw-001');
+    expect(op.registered).toBe(false);
+    expect(op.id).toBeTruthy();
+  });
+
+  it('resolveOperative is idempotent', async () => {
+    const a = await resolveOperative('hw-idem');
+    const b = await resolveOperative('hw-idem');
+    expect(a.id).toBe(b.id);
+  });
+
+  it('canBegin=true for 0.1 (no prerequisites)', async () => {
+    const op = await resolveOperative('hw-begin');
+    expect(await canBegin(op.id, '0.1')).toBe(true);
+  });
+
+  it('beginChallenge 0.1 returns attemptId + content with intro text', async () => {
+    const op = await resolveOperative('hw-begin2');
+    const { attemptId, content } = await beginChallenge(op.id, '0.1');
+    expect(attemptId).toBeTruthy();
+    expect((content as any).intro).toBeTruthy();
+  });
+
+  it('combat: open → first roll → won → rewards + operative registered + gauge bumped', async () => {
+    const op = await resolveOperative('hw-combat');
+    // Give the operative a username so the Onion reward path fires (not skipped)
+    _db.operatives.get(op.id)!.username = 'test-operative';
+    const { attemptId } = await beginChallenge(op.id, '0.1');
+    // enemyHp=1 → first roll wins
+    const session = await openCombat({ operativeId: op.id, challengeId: '0.1', attemptId, enemyHp: 1, operativeHp: 100, wavesRequired: 1 });
+    expect(session.status).toBe('active');
+    const updated = await applyRoll(session.id);
+    expect(updated.status).toBe('won');
+    const result = await submitChallenge(op.id, '0.1', { action: 'roll' }, attemptId);
+    expect(result.passed).toBe(true);
+    // Inventory: encased_meat_mk1
+    expect(await listCatalogIds(op.id)).toContain('encased_meat_mk1');
+    // Onion reward: 50 queued (not real API)
+    expect(getMockRewards().some((r: any) => r.amount === 50)).toBe(true);
+    // Operative marked registered on first win
+    expect(_db.operatives.get(op.id)?.registered).toBe(true);
+    // Gauge bumped ≥ 500
+    expect(_db.gauge.current).toBeGreaterThanOrEqual(500);
+  });
+
+  it('combat lost (op hp→0) returns passed=false', async () => {
+    const op = await resolveOperative('hw-combat-lose');
+    const { attemptId } = await beginChallenge(op.id, '0.1');
+    const session = await openCombat({ operativeId: op.id, challengeId: '0.1', attemptId, enemyHp: 1000, operativeHp: 1, wavesRequired: 1 });
+    await applyRoll(session.id); // enemy deals ≥1 dmg; op hp 1 → op dies
+    const result = await submitChallenge(op.id, '0.1', { action: 'roll' }, attemptId);
+    expect(result.passed).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUITE 2 — Badge sim → beacon relay → engine E2E
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Badge sim → relay protocol E2E', () => {
+  beforeEach(() => { resetDb(); clearMockRewards(); });
+
+  it('IDENTIFY → CHALLENGE_BEGIN → COMBAT_ROLL_REQUEST through SimChannel + relay', async () => {
+    const channel = new SimChannel();
+    const badge = new VirtualBadge('hw-sim-001', { channel, log: () => {}, timeoutMs: 5000 });
+    const beaconMac = '02:aa:bb:cc:dd:01';
+    const beaconPeer = makeRelayBeacon(channel, beaconMac, 'b-ketchup-sim', '0.1');
+
+    // Badge discovers beacon via BEACON_HELLO
+    const seen = await badge.waitForBeacon('0.1', 1000);
+    expect(seen.beaconId).toBe('b-ketchup-sim');
+
+    // OPERATIVE_IDENTIFY
+    const ack = await badge.identify(beaconMac);
+    expect(ack.type).toBe(MsgType.IDENTIFY_ACK);
+    const opId = (ack.body as any).id as string;
+    expect(opId).toBeTruthy();
+
+    // CHALLENGE_BEGIN
+    const intro = await badge.beginChallenge(beaconMac, '0.1');
+    expect(intro.type).toBe(MsgType.CHALLENGE_INTRO);
+
+    // Open a combat session server-side (relay handler needs an existing active session)
+    await openCombat({ operativeId: opId, challengeId: '0.1', enemyHp: 1, operativeHp: 100, wavesRequired: 1 });
+
+    // COMBAT_ROLL_REQUEST → server applies roll → COMBAT_ROLL_RESPONSE
+    const rollResp = await badge.combatRoll(beaconMac, '0.1');
+    expect(rollResp.type).toBe(MsgType.COMBAT_ROLL_RESPONSE);
+    expect((rollResp.body as any).st).toBe('won');
+
+    badge.close();
+    beaconPeer.close();
+  });
+
+  it('unknown challenge CHALLENGE_BEGIN returns ERROR frame', async () => {
+    const op = await resolveOperative('hw-unk');
+    const frames = encodeMessage(MsgType.CHALLENGE_BEGIN, 1, { c: 'nonexistent-999', h: op.hardwareId })
+      .map((f: any) => Buffer.from(f).toString('base64'));
+    const respFrames = await inProcessRelay('b-test', frames);
+    const r = new Reassembler(); let msg: any = null;
+    for (const b64 of respFrames) { msg = r.push(decodeFrame(Buffer.from(b64, 'base64'))); if (msg) break; }
+    expect(msg?.type).toBe(MsgType.ERROR);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUITE 3 — Voice challenge (mocked STT)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Act 1.1 — Malört Fountains (voice/STT)', () => {
+  beforeEach(() => { resetDb(); clearMockRewards(); delete process.env['STT_MOCK_TRANSCRIPT']; });
+
+  it('1.1 registered as type=dialogue', () => {
+    const c = getChallenge('1.1');
+    expect(c).toBeTruthy();
+    expect(c!.type).toBe('dialogue');
+    expect(c!.act).toBe(1);
+  });
+
+  it('passes with correct treatment-sequence transcript', async () => {
+    const op = await resolveOperative('hw-voice-pass');
+    _db.operatives.get(op.id)!.username = 'test-voice-player';
+    const { attemptId } = await beginChallenge(op.id, '1.1');
+    const result = await submitChallenge(op.id, '1.1', { t: 'intake crib tunnel jardine grid' }, attemptId);
+    expect(result.passed).toBe(true);
+    expect(await listCatalogIds(op.id)).toContain('water_main_key');
+    expect(getMockRewards().some((r: any) => r.amount === 80)).toBe(true);
+  });
+
+  it('fails with completely wrong transcript', async () => {
+    const op = await resolveOperative('hw-voice-fail');
+    const { attemptId } = await beginChallenge(op.id, '1.1');
+    const result = await submitChallenge(op.id, '1.1', { t: 'pizza donuts hot chocolate nachos' }, attemptId);
+    expect(result.passed).toBe(false);
+    expect(await listCatalogIds(op.id)).not.toContain('water_main_key');
+  });
+
+  it('passes via audio blob ref path (mocked STT provider)', async () => {
+    process.env['STT_MOCK_TRANSCRIPT'] = 'intake crib tunnel jardine grid';
+    _blobStore.set('ref-audio-001', new Uint8Array([0x01, 0x02]));
+    const op = await resolveOperative('hw-voice-blob');
+    const { attemptId } = await beginChallenge(op.id, '1.1');
+    const result = await submitChallenge(op.id, '1.1', { ref: 'ref-audio-001' }, attemptId);
+    expect(result.passed).toBe(true);
+  });
+
+  it('VOICE_CAPTURE_SUBMIT via SimChannel relay passes + grants water_main_key', async () => {
+    const channel = new SimChannel();
+    const badge = new VirtualBadge('hw-voice-relay', { channel, log: () => {}, timeoutMs: 5000 });
+    const beaconMac = '02:bb:cc:dd:ee:02';
+    const beaconPeer = makeRelayBeacon(channel, beaconMac, 'b-fountain-sim', '1.1');
+
+    await badge.waitForBeacon('1.1', 1000);
+    const ack = await badge.identify(beaconMac);
+    const opId = (ack.body as any).id as string;
+    // Give username so onion reward path fires
+    _db.operatives.get(opId)!.username = 'test-voice-relay-player';
+    await badge.beginChallenge(beaconMac, '1.1');
+
+    // voiceSubmit sends VOICE_CAPTURE_SUBMIT with pre-transcribed text
+    const voiceResp = await badge.voiceSubmit(beaconMac, '1.1', 'intake crib tunnel jardine grid');
+    expect(voiceResp.type).toBe(MsgType.CHALLENGE_RESULT);
+    expect((voiceResp.body as any).passed).toBe(true);
+    expect(await listCatalogIds(opId)).toContain('water_main_key');
+
+    badge.close();
+    beaconPeer.close();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUITE 4 — NPC challenge (mocked Claude)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Act 1.3 — River Ran Backwards (NPC/AI)', () => {
+  beforeEach(() => { resetDb(); clearMockRewards(); clearNpcQueue(); setNpcDefault(true); });
+
+  it('1.3 registered as type=npc, requires water_main_key', () => {
+    const c = getChallenge('1.3');
+    expect(c).toBeTruthy();
+    expect(c!.type).toBe('npc');
+    expect(c!.requires).toContain('water_main_key');
+  });
+
+  it('canBegin=false without water_main_key', async () => {
+    const op = await resolveOperative('hw-npc-nokey');
+    expect(await canBegin(op.id, '1.3')).toBe(false);
+  });
+
+  it('canBegin=true after granting water_main_key', async () => {
+    const op = await resolveOperative('hw-npc-key');
+    await grantItem(op.id, 'water_main_key');
+    expect(await canBegin(op.id, '1.3')).toBe(true);
+  });
+
+  it('passes when mocked Claude returns passed=true', async () => {
+    const op = await resolveOperative('hw-npc-pass');
+    _db.operatives.get(op.id)!.username = 'test-npc-player';
+    await grantItem(op.id, 'water_main_key');
+    queueNpcResponse({ passed: true, reply: 'Correct, champ! Sewage → Lake Michigan.', reasoning: 'correct' });
+    const { attemptId } = await beginChallenge(op.id, '1.3');
+    const result = await submitChallenge(op.id, '1.3', { t: 'Chicago reversed the river in 1900 to stop sewage contaminating Lake Michigan' }, attemptId);
+    expect(result.passed).toBe(true);
+    expect(await listCatalogIds(op.id)).toContain('reversal_map');
+    expect(getMockRewards().some((r: any) => r.amount === 70)).toBe(true);
+  });
+
+  it('continues when mocked Claude returns passed=false', async () => {
+    const op = await resolveOperative('hw-npc-fail');
+    await grantItem(op.id, 'water_main_key');
+    queueNpcResponse({ passed: false, reply: "That's a no, pal.", reasoning: 'wrong' });
+    const { attemptId } = await beginChallenge(op.id, '1.3');
+    const result = await submitChallenge(op.id, '1.3', { t: 'it reversed because of floods' }, attemptId);
+    expect(result.passed).toBe(false);
+    expect(result.continued).toBe(true);
+    expect(await listCatalogIds(op.id)).not.toContain('reversal_map');
+  });
+
+  it('returns greeting/continued when utterance is empty', async () => {
+    const op = await resolveOperative('hw-npc-empty');
+    await grantItem(op.id, 'water_main_key');
+    const { attemptId } = await beginChallenge(op.id, '1.3');
+    const result = await submitChallenge(op.id, '1.3', { t: '' }, attemptId);
+    expect(result.passed).toBe(false);
+    expect(result.continued).toBe(true);
+  });
+
+  it('NPC_DIALOGUE_TURN via SimChannel relay → passes + grants reversal_map', async () => {
+    const channel = new SimChannel();
+    const badge = new VirtualBadge('hw-npc-relay', { channel, log: () => {}, timeoutMs: 5000 });
+    const beaconMac = '02:cc:dd:ee:ff:03';
+    const beaconPeer = makeRelayBeacon(channel, beaconMac, 'b-river-sim', '1.3');
+
+    await badge.waitForBeacon('1.3', 1000);
+    const ack = await badge.identify(beaconMac);
+    const opId = (ack.body as any).id as string;
+    // Grant key directly (simulating prior 1.1 completion)
+    await grantItem(opId, 'water_main_key');
+    await badge.beginChallenge(beaconMac, '1.3');
+
+    queueNpcResponse({ passed: true, reply: 'You got it, champ!', reasoning: 'correct' });
+    const npcResp = await badge.npcTurn(beaconMac, '1.3', 'Chicago reversed the Chicago River in 1900 to stop sewage contaminating Lake Michigan');
+    expect(npcResp.type).toBe(MsgType.NPC_DIALOGUE_REPLY);
+    expect((npcResp.body as any).passed).toBe(true);
+    expect(await listCatalogIds(opId)).toContain('reversal_map');
+
+    badge.close();
+    beaconPeer.close();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUITE 5 — Progression gating (Act 4 requires 3 credentials)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Act 4 progression gating', () => {
+  beforeEach(() => { resetDb(); clearMockRewards(); });
+
+  it('4.1 requires grid_credential + dispatch_credential + city_it_keycard', () => {
+    const c = getChallenge('4.1');
+    expect(c).toBeTruthy();
+    expect(c!.requires).toContain('grid_credential');
+    expect(c!.requires).toContain('dispatch_credential');
+    expect(c!.requires).toContain('city_it_keycard');
+    expect(c!.requires.length).toBe(3);
+  });
+
+  it('canBegin=false with no credentials', async () => {
+    const op = await resolveOperative('hw-a4-none');
+    expect(await canBegin(op.id, '4.1')).toBe(false);
+  });
+
+  it('canBegin=false with 1 of 3 credentials', async () => {
+    const op = await resolveOperative('hw-a4-1of3');
+    await grantItem(op.id, 'grid_credential');
+    expect(await canBegin(op.id, '4.1')).toBe(false);
+  });
+
+  it('canBegin=false with 2 of 3 credentials', async () => {
+    const op = await resolveOperative('hw-a4-2of3');
+    await grantItem(op.id, 'grid_credential');
+    await grantItem(op.id, 'dispatch_credential');
+    expect(await canBegin(op.id, '4.1')).toBe(false);
+  });
+
+  it('canBegin=true with all 3 credentials', async () => {
+    const op = await resolveOperative('hw-a4-3of3');
+    await grantItem(op.id, 'grid_credential');
+    await grantItem(op.id, 'dispatch_credential');
+    await grantItem(op.id, 'city_it_keycard');
+    expect(await canBegin(op.id, '4.1')).toBe(true);
+  });
+
+  it('beginChallenge throws GATED error without credentials', async () => {
+    const op = await resolveOperative('hw-a4-gated');
+    await expect(beginChallenge(op.id, '4.1')).rejects.toThrow(/requires/i);
+  });
+
+  it('validate() returns passed=false with empty inventory', async () => {
+    const c = getChallenge('4.1')!;
+    const op = await resolveOperative('hw-a4-validate');
+    const r = c.validate({}, { operative: op, inventory: [], combat: undefined, now: Date.now() });
+    const result = r instanceof Promise ? await r : r;
+    expect(result.passed).toBe(false);
+  });
+
+  it('full Act 4 combat: begin + open + roll → win → prompt_console_access + 200 Onions', async () => {
+    const op = await resolveOperative('hw-a4-full');
+    _db.operatives.get(op.id)!.username = 'test-act4-player';
+    await grantItem(op.id, 'grid_credential');
+    await grantItem(op.id, 'dispatch_credential');
+    await grantItem(op.id, 'city_it_keycard');
+    const { attemptId } = await beginChallenge(op.id, '4.1');
+    const session = await openCombat({ operativeId: op.id, challengeId: '4.1', attemptId, enemyHp: 1, operativeHp: 200, wavesRequired: 1 });
+    await applyRoll(session.id);
+    const result = await submitChallenge(op.id, '4.1', {}, attemptId);
+    expect(result.passed).toBe(true);
+    expect(await listCatalogIds(op.id)).toContain('prompt_console_access');
+    expect(getMockRewards().some((r: any) => r.amount === 200)).toBe(true);
+  });
+
+  it('relay CHALLENGE_BEGIN → GATED error without credentials', async () => {
+    const op = await resolveOperative('hw-a4-relay');
+    const frames = encodeMessage(MsgType.CHALLENGE_BEGIN, 1, { c: '4.1', h: op.hardwareId })
+      .map((f: any) => Buffer.from(f).toString('base64'));
+    const respFrames = await inProcessRelay('b-server-room', frames);
+    const r = new Reassembler(); let msg: any = null;
+    for (const b64 of respFrames) { msg = r.push(decodeFrame(Buffer.from(b64, 'base64'))); if (msg) break; }
+    expect(msg?.type).toBe(MsgType.ERROR);
+    expect((msg?.body as any).code).toBe('GATED');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUITE 6 — Reward ledger idempotency
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Reward ledger idempotency', () => {
+  beforeEach(() => { resetDb(); clearMockRewards(); });
+
+  it('gauge bumps accumulate across calls', async () => {
+    const op = await resolveOperative('hw-gauge');
+    await applyRewards(op.id, '0.1', 'a1', [{ kind: 'gauge', amount: 500 }]);
+    await applyRewards(op.id, '0.1', 'a2', [{ kind: 'gauge', amount: 300 }]);
+    expect(_db.gauge.current).toBe(800);
+  });
+
+  it('same externalId onion reward is not doubled', async () => {
+    const op = await resolveOperative('hw-idem-reward');
+    _db.operatives.get(op.id)!.username = 'test-player';
+    await applyRewards(op.id, '0.1', 'atm-same', [{ kind: 'onions', amount: 50 }]);
+    await applyRewards(op.id, '0.1', 'atm-same', [{ kind: 'onions', amount: 50 }]);
+    const extId = `${op.id}:0.1:atm-same:onions:50`;
+    expect(getMockRewards().filter((r: any) => r.externalId === extId).length).toBe(1);
+  });
+
+  it('inventory grant is idempotent for credentials', async () => {
+    const op = await resolveOperative('hw-inv-idem');
+    await grantItem(op.id, 'grid_credential');
+    await grantItem(op.id, 'grid_credential');
+    const ids = await listCatalogIds(op.id);
+    expect(ids.filter((id: string) => id === 'grid_credential').length).toBe(1);
+  });
+});

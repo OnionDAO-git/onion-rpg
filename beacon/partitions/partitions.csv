@@ -1,0 +1,15 @@
+# ONION RPG beacon partition table — ESP32-C3, 4 MB flash
+# nvs    : NVS for config + persistent state     256 KB
+# otadata: OTA switch slot                        8 KB
+# phy_init: RF calibration data                  4 KB
+# app0   : factory/OTA_0 image slot             1408 KB  (~1.4 MB)
+# app1   : OTA_1 image slot                     1408 KB  (~1.4 MB)
+# spiffs : challenge configs + beacon_config.json 512 KB
+#
+# Name,   Type,  SubType, Offset,   Size,    Flags
+nvs,      data,  nvs,     0x9000,   0x40000,
+otadata,  data,  ota,     0x49000,  0x2000,
+phy_init, data,  phy,     0x4B000,  0x1000,
+app0,     app,   ota_0,   0x50000,  0x160000,
+app1,     app,   ota_1,   0x1B0000, 0x160000,
+spiffs,   data,  spiffs,  0x310000, 0x80000,
