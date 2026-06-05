@@ -71,7 +71,7 @@ export async function adminListOperatives(): Promise<AdminOperative[]> {
     SELECT
       o.id, o.hardware_id, o.onion_id, o.username, o.callsign,
       o.registered, o.created_at, o.last_seen_at,
-      COALESCE(g.act, 0)   AS act,
+      COALESCE(g.current_act, 0)   AS act,
       COALESCE(g.hp, 100)  AS hp
     FROM operatives o
     LEFT JOIN game_state g ON g.operative_id = o.id
