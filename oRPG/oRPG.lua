@@ -25,10 +25,27 @@
 -- When this script runs, package.path must include the script directory.
 -- The firmware sets up "?.lua" relative to the script root, so:
 --   require('lib.caps')  -> oRPG/lib/caps.lua  (when run from oRPG/)
--- If running from repo root (dev/sim), add the path manually:
-if not package.path:find('oRPG', 1, true) then
-    package.path = package.path .. ';oRPG/?.lua;oRPG/?/init.lua'
+-- Be tolerant of both upload layouts:
+--   oRPG.lua + lib/*.lua + screens/*.lua
+--   oRPG/oRPG.lua + oRPG/lib/*.lua + oRPG/screens/*.lua
+-- Some badge registry builds do not seed package.path with the script dir.
+local _path = package.path or ''
+local function add_lua_path(pattern)
+    if not string.find(_path, pattern, 1, true) then
+        _path = _path .. ';' .. pattern
+    end
 end
+
+add_lua_path('?.lua')
+add_lua_path('?/init.lua')
+add_lua_path('lib/?.lua')
+add_lua_path('lib/?/init.lua')
+add_lua_path('screens/?.lua')
+add_lua_path('oRPG/?.lua')
+add_lua_path('oRPG/?/init.lua')
+add_lua_path('oRPG/lib/?.lua')
+add_lua_path('oRPG/screens/?.lua')
+package.path = _path
 
 local caps   = require('lib.caps')
 local proto  = require('lib.proto')

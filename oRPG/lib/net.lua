@@ -86,45 +86,42 @@ function net.request(msg_type, body, timeout_ms)
                 return nil, 'send failed: ' .. tostring(send_err)
             end
             onion.sleep(200)
-            goto continue
-        end
+        else
+            -- reassemble the reply (may arrive in multiple chunks)
+            local reassembler = proto.new_reassembler()
+            local deadline = timeout_ms
 
-        -- reassemble the reply (may arrive in multiple chunks)
-        local reassembler = proto.new_reassembler()
-        local deadline = timeout_ms
-
-        while deadline > 0 do
-            local slice = math.min(deadline, 2000)
-            local msg = onion.espnow_receive(slice)
-            if msg then
-                local frame, frame_err = proto.decode_frame(msg.message)
-                if not frame then
-                    onion.log('net: bad frame: ' .. tostring(frame_err))
-                elseif frame.msg_id == msg_id then
-                    -- this reply correlates with our request
-                    local decoded = reassembler:push(frame)
-                    if decoded ~= nil then
-                        -- handle ERROR responses
-                        if frame.msg_type == proto.MsgType.ERROR then
-                            local code = (type(decoded) == 'table' and decoded.code) or 'ERR'
-                            local emsg = (type(decoded) == 'table' and decoded.msg)  or ''
-                            return nil, code .. ': ' .. emsg
+            while deadline > 0 do
+                local slice = math.min(deadline, 2000)
+                local msg = onion.espnow_receive(slice)
+                if msg then
+                    local frame, frame_err = proto.decode_frame(msg.message)
+                    if not frame then
+                        onion.log('net: bad frame: ' .. tostring(frame_err))
+                    elseif frame.msg_id == msg_id then
+                        -- this reply correlates with our request
+                        local decoded = reassembler:push(frame)
+                        if decoded ~= nil then
+                            -- handle ERROR responses
+                            if frame.msg_type == proto.MsgType.ERROR then
+                                local code = (type(decoded) == 'table' and decoded.code) or 'ERR'
+                                local emsg = (type(decoded) == 'table' and decoded.msg)  or ''
+                                return nil, code .. ': ' .. emsg
+                            end
+                            return decoded, nil
                         end
-                        return decoded, nil
+                        -- else: still waiting for more chunks
                     end
-                    -- else: still waiting for more chunks
                 end
+                deadline = deadline - slice
             end
-            deadline = deadline - slice
-        end
 
-        -- timed out
-        if attempt < NET_RETRIES then
-            onion.log('net: timeout attempt ' .. attempt .. ', retrying...')
-            onion.sleep(300)
+            -- timed out
+            if attempt < NET_RETRIES then
+                onion.log('net: timeout attempt ' .. attempt .. ', retrying...')
+                onion.sleep(300)
+            end
         end
-
-        ::continue::
     end
 
     return nil, 'request timed out after ' .. NET_RETRIES .. ' attempts'

@@ -13,8 +13,11 @@
 #   3. Flashes the SPIFFS config via flash_spiffs.sh (beacon identity + challenge).
 #
 # Prerequisites:
-#   - ESP-IDF v5.x sourced (idf.py, esptool.py on PATH). Run `source $IDF_PATH/export.sh`.
-#   - A single ESP32-C3 connected over USB (multiple are fine if you pass --port).
+#   - ESP-IDF v5.x installed. If idf.py/esptool aren't on PATH, this script
+#     auto-sources export.sh from common locations (~/.espressif, ~/esp, etc.).
+#     Override with IDF_EXPORT=/path/to/esp-idf/export.sh.
+#   - An ESP32-C3 connected over USB (the port is auto-detected; multiple
+#     boards are fine if you pass --port).
 
 set -euo pipefail
 
@@ -91,58 +94,144 @@ if [[ ! -f "$CHALLENGES_DIR/${CHALLENGE_ID}.json" ]]; then
     exit 1
 fi
 
-# ── Tooling check ──────────────────────────────────────────────────────
-if ! command -v esptool.py &>/dev/null; then
-    echo "ERROR: esptool.py not on PATH. Run: source \$IDF_PATH/export.sh" >&2
+# ── Locate ESP-IDF tooling ─────────────────────────────────────────────
+# If idf.py / esptool aren't already on PATH, try to source ESP-IDF's
+# export.sh from common install locations so you don't have to do it by hand.
+source_esp_idf() {
+    command -v idf.py &>/dev/null && return 0
+
+    local candidates=()
+    [[ -n "${IDF_EXPORT:-}" ]] && candidates+=("$IDF_EXPORT")
+    [[ -n "${IDF_PATH:-}"   ]] && candidates+=("$IDF_PATH/export.sh")
+    candidates+=(
+        "$HOME"/.espressif/v5.*/esp-idf/export.sh
+        "$HOME"/.espressif-5.*/v5.*/esp-idf/export.sh
+        "$HOME/esp/esp-idf/export.sh"
+        "$HOME/esp/v5.*/esp-idf/export.sh"
+        "$HOME/.platformio/packages/framework-espidf/export.sh"
+    )
+
+    local export_script
+    local export_log="${TMPDIR:-/tmp}/flash-beacon-idf-export.log"
+    for export_script in "${candidates[@]}"; do
+        [[ -f "$export_script" ]] || continue
+        echo "Loading ESP-IDF from $export_script" >&2
+        # shellcheck disable=SC1090
+        if . "$export_script" >"$export_log" 2>&1; then
+            command -v idf.py &>/dev/null && return 0
+        else
+            echo "Failed to load ESP-IDF from $export_script" >&2
+            tail -n 20 "$export_log" >&2 || true
+        fi
+    done
+
+    return 1
+}
+
+# Resolve the esptool binary name (esptool.py on older IDF, esptool on newer).
+esptool_command() {
+    if command -v esptool.py &>/dev/null; then
+        echo "esptool.py"
+    elif command -v esptool &>/dev/null; then
+        echo "esptool"
+    else
+        echo ""
+    fi
+}
+
+source_esp_idf || true
+
+ESPTOOL="$(esptool_command)"
+if [[ -z "$ESPTOOL" ]]; then
+    echo "ERROR: esptool not found (tried esptool.py and esptool)." >&2
+    echo "       Source ESP-IDF first (source \$IDF_PATH/export.sh) or set" >&2
+    echo "       IDF_EXPORT=/path/to/esp-idf/export.sh and re-run." >&2
     exit 1
 fi
 
 # ── Auto-detect the ESP32-C3 serial port ───────────────────────────────
-# Probes each candidate port with `esptool.py chip_id` and keeps the one
-# that reports an ESP32-C3. Works on macOS (cu.usbmodem/usbserial) and
-# Linux (ttyUSB/ttyACM).
+# Lists candidate serial devices and probes each with `esptool chip_id`,
+# keeping the first that reports an ESP32-C3.
+#
+# IMPORTANT (macOS): only the /dev/cu.* "call-out" device is used. The
+# matching /dev/tty.* device blocks on open() waiting for carrier-detect,
+# which makes esptool hang or fail — so we deliberately skip tty.* there.
+LAST_PROBE_OUTPUT=""
+candidate_ports() {
+    local patterns
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        patterns=(
+            "/dev/cu.usbmodem"*
+            "/dev/cu.usbserial"*
+            "/dev/cu.wchusbserial"*
+            "/dev/cu.SLAB_USBtoUART"*
+        )
+    else
+        patterns=( "/dev/ttyUSB"* "/dev/ttyACM"* )
+    fi
+    local port
+    for port in "${patterns[@]}"; do
+        [[ -e "$port" ]] && printf '%s\n' "$port"
+    done | sort -u
+}
+
+probe_esp32c3_port() {
+    local port="$1"
+    if ! LAST_PROBE_OUTPUT="$("$ESPTOOL" --chip auto --port "$port" --before default_reset --after no_reset chip_id 2>&1)"; then
+        return 1
+    fi
+    grep -qiE 'ESP32-C3|ESP32C3' <<<"$LAST_PROBE_OUTPUT"
+}
+
 detect_port() {
-    local candidates=()
-    case "$(uname -s)" in
-        Darwin)
-            # nullglob so unmatched globs expand to nothing
-            shopt -s nullglob
-            candidates=( /dev/cu.usbmodem* /dev/cu.usbserial* /dev/cu.wchusbserial* /dev/cu.SLAB_USBtoUART* )
-            shopt -u nullglob
-            ;;
-        *)
-            shopt -s nullglob
-            candidates=( /dev/ttyUSB* /dev/ttyACM* )
-            shopt -u nullglob
-            ;;
-    esac
+    local port candidates=()
+    while IFS= read -r port; do candidates+=("$port"); done < <(candidate_ports)
 
     if [[ ${#candidates[@]} -eq 0 ]]; then
         echo "ERROR: no serial devices found. Is the ESP32-C3 plugged in?" >&2
         return 1
     fi
 
-    local found=""
-    for dev in "${candidates[@]}"; do
-        echo "  probing $dev ..." >&2
-        if esptool.py --port "$dev" --before default_reset --after no_reset chip_id 2>/dev/null \
-             | grep -qiE 'ESP32-C3'; then
-            found="$dev"
-            break
+    for port in "${candidates[@]}"; do
+        echo "  probing $port ..." >&2
+        if probe_esp32c3_port "$port"; then
+            printf '%s\n' "$port"
+            return 0
         fi
     done
 
-    if [[ -z "$found" ]]; then
-        echo "ERROR: no ESP32-C3 detected among: ${candidates[*]}" >&2
-        echo "       Pass --port <dev> to select one explicitly." >&2
-        return 1
+    # No probe confirmed a C3. If there's exactly one candidate, it's almost
+    # certainly the board (the probe can fail when the chip is mid-reset, busy,
+    # or esptool needs a different reset mode) — use it but surface the error.
+    if [[ ${#candidates[@]} -eq 1 ]]; then
+        echo "WARNING: could not confirm an ESP32-C3 via chip_id, but only one" >&2
+        echo "         serial device is present. Falling back to it: ${candidates[0]}" >&2
+        echo "         (last esptool output below)" >&2
+        echo "----------------------------------------------------------------" >&2
+        echo "$LAST_PROBE_OUTPUT" >&2
+        echo "----------------------------------------------------------------" >&2
+        printf '%s\n' "${candidates[0]}"
+        return 0
     fi
-    echo "$found"
+
+    echo "ERROR: no ESP32-C3 detected among: ${candidates[*]}" >&2
+    echo "       Last esptool output:" >&2
+    echo "$LAST_PROBE_OUTPUT" >&2
+    echo "       Pass --port <dev> to select one explicitly." >&2
+    return 1
 }
 
 if [[ -z "$PORT" ]]; then
     echo "Auto-detecting ESP32-C3..."
     PORT="$(detect_port)"
+else
+    if [[ ! -e "$PORT" ]]; then
+        echo "ERROR: serial port does not exist: $PORT" >&2
+        exit 1
+    fi
+    if ! probe_esp32c3_port "$PORT"; then
+        echo "WARNING: $PORT did not respond as an ESP32-C3; using it anyway." >&2
+    fi
 fi
 echo "Using port: $PORT"
 echo "Challenge:  $CHALLENGE_ID"
@@ -151,7 +240,9 @@ echo
 # ── 1. Build + flash firmware ──────────────────────────────────────────
 if [[ "$CONFIG_ONLY" -eq 0 ]]; then
     if ! command -v idf.py &>/dev/null; then
-        echo "ERROR: idf.py not on PATH. Run: source \$IDF_PATH/export.sh" >&2
+        echo "ERROR: idf.py not on PATH (ESP-IDF could not be located)." >&2
+        echo "       Source ESP-IDF (source \$IDF_PATH/export.sh) or set" >&2
+        echo "       IDF_EXPORT=/path/to/esp-idf/export.sh, or use --config-only." >&2
         exit 1
     fi
     echo "==> Building + flashing firmware..."

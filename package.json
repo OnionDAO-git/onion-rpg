@@ -9,6 +9,8 @@
 		"build": "vite build",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
+		"orpg:bundle": "node scripts/bundle-orpg.js --screens all --out oRPG/dist/oRPG.bundle.lua",
+		"orpg:bundle:per-screen": "node scripts/bundle-orpg.js --per-screen",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"db:init": "bun scripts/db-init.ts",
