@@ -1,11 +1,10 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { invalidateAll } from '$app/navigation';
-	import type { KanbanDev } from '$lib/shared/kanban-meta';
+	import type { AuthUser } from '$lib/server/onion/session';
 
 	let { children, data } = $props<{
 		children: any;
-		data: { allDevelopers: KanbanDev[]; currentDev: KanbanDev | null };
+		data: { user: AuthUser };
 	}>();
 
 	const navItems = [
@@ -14,7 +13,6 @@
 		{ href: '/admin/operatives',  label: 'Operatives',  icon: '🪪'  },
 		{ href: '/admin/storyteller', label: 'Storyteller', icon: '🤖' },
 		{ href: '/admin/rewards',     label: 'Rewards',     icon: '🪙'  },
-		{ href: '/admin/about',       label: 'About',       icon: '📐'  },
 	] as const;
 
 	let pathname = $derived(page.url.pathname);
@@ -23,20 +21,19 @@
 		return pathname.startsWith(href);
 	}
 
-	let devSelectOpen = $state(false);
+	// The signed-in Onion DAO admin, pulled from the shared session cookie +
+	// onion API (see (admin)/+layout.server.ts).
+	let user = $derived(data.user);
+	let menuOpen = $state(false);
 
-	async function selectDev(devId: string) {
-		devSelectOpen = false;
-		await fetch('/api/dev-pref', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ devId }),
-		});
-		await invalidateAll();
+	function initials(name: string): string {
+		return name
+			.split(/\s+/)
+			.filter(Boolean)
+			.slice(0, 2)
+			.map((p) => p[0]?.toUpperCase() ?? '')
+			.join('') || '?';
 	}
-
-	let currentDev = $derived(data.currentDev);
-	let allDevelopers = $derived(data.allDevelopers ?? []);
 </script>
 
 <div class="admin-shell">
@@ -64,6 +61,7 @@
 		</nav>
 
 		<div class="sidebar-footer">
+			<a class="guide-link" href="/">📖 Player Guide ↗</a>
 			<span class="deepdish-tag">DEEPDISH v&infin;</span>
 			<span class="version-value"><span class="version-label">VERSION</span> 2026-06-06</span>
 		</div>
@@ -71,44 +69,33 @@
 
 	<!-- Right column: topbar + content -->
 	<div class="right-col">
-		<!-- Topbar with user selector -->
+		<!-- Topbar with signed-in admin -->
 		<header class="topbar">
 			<span class="topbar-spacer"></span>
 			<div class="user-selector">
 				<button
 					class="user-btn"
-					class:no-user={!currentDev}
-					onclick={() => devSelectOpen = !devSelectOpen}
-					aria-label="Select operative"
+					onclick={() => menuOpen = !menuOpen}
+					aria-label="Account menu"
 				>
-					{#if currentDev}
-						<span class="user-avatar" style="background:{currentDev.color}">{currentDev.initials}</span>
-						<span class="user-name">{currentDev.name}</span>
+					{#if user.avatarUrl}
+						<img class="user-avatar img" src={user.avatarUrl} alt="" />
 					{:else}
-						<span class="user-avatar anon">?</span>
-						<span class="user-name muted">Select operative</span>
+						<span class="user-avatar">{initials(user.name)}</span>
 					{/if}
+					<span class="user-name">{user.name}</span>
 					<span class="user-caret">▾</span>
 				</button>
 
-				{#if devSelectOpen}
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
-					<div class="user-backdrop" onclick={() => devSelectOpen = false}></div>
+				{#if menuOpen}
+					<button class="user-backdrop" aria-label="Close menu" onclick={() => menuOpen = false}></button>
 					<div class="user-dropdown">
-						<div class="dropdown-header">Playing as</div>
-						{#each allDevelopers as dev (dev.id)}
-							<button
-								class="dropdown-item"
-								class:active={currentDev?.id === dev.id}
-								onclick={() => selectDev(dev.id)}
-							>
-								<span class="user-avatar sm" style="background:{dev.color}">{dev.initials}</span>
-								{dev.name}
-								{#if currentDev?.id === dev.id}<span class="checkmark">✓</span>{/if}
-							</button>
-						{/each}
+						<div class="dropdown-header">
+							Signed in{#if user.handle} as @{user.handle}{/if}
+						</div>
+						<div class="dropdown-meta">{user.email}</div>
 						<div class="dropdown-sep"></div>
-						<button class="dropdown-item muted" onclick={() => selectDev('')}>Sign out</button>
+						<a class="dropdown-item muted" href="/auth/logout" data-sveltekit-reload>Sign out</a>
 					</div>
 				{/if}
 			</div>
@@ -171,6 +158,11 @@
 		border-top: 1px solid #1e1e2e;
 		display: flex; flex-direction: column; gap: 0.2rem;
 	}
+	.guide-link {
+		font-size: 0.68rem; color: #72a4e4; text-decoration: none;
+		margin-bottom: 0.4rem;
+	}
+	.guide-link:hover { color: #9cc2f0; }
 	.deepdish-tag   { font-size: 0.65rem; color: #6b6b80; letter-spacing: 0.08em; }
 	.version-label  { color: #6b6b80; letter-spacing: 0.1em; }
 	.version-value  { font-size: 0.68rem; color: #8ecf5e; }
@@ -204,22 +196,20 @@
 		transition: border-color 0.15s;
 	}
 	.user-btn:hover       { border-color: #4a7a3a; }
-	.user-btn.no-user     { border-color: #2a2a3a; opacity: 0.7; }
-	.user-btn:hover.no-user { opacity: 1; }
 
 	.user-avatar {
 		width: 1.3rem; height: 1.3rem; border-radius: 50%;
 		display: flex; align-items: center; justify-content: center;
 		font-size: 0.55rem; font-weight: 700; color: #0d0d15; flex-shrink: 0;
+		background: #8ecf5e;
 	}
-	.user-avatar.anon { background: #2a2a3a; color: #6b6b80; }
-	.user-avatar.sm   { width: 1.1rem; height: 1.1rem; font-size: 0.5rem; }
+	.user-avatar.img  { object-fit: cover; background: #2a2a3a; }
 	.user-name        { line-height: 1; }
-	.user-name.muted  { color: #6b6b80; }
 	.user-caret       { font-size: 0.6rem; color: #6b6b80; margin-left: 0.1rem; }
 
 	.user-backdrop {
 		position: fixed; inset: 0; z-index: 30;
+		background: none; border: none; padding: 0; cursor: default;
 	}
 	.user-dropdown {
 		position: absolute; top: calc(100% + 0.4rem); right: 0;
@@ -228,19 +218,21 @@
 		z-index: 40; overflow: hidden;
 	}
 	.dropdown-header {
-		padding: 0.4rem 0.75rem; font-size: 0.65rem; color: #4a4a60;
-		text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid #1e1e2e;
+		padding: 0.4rem 0.75rem 0.1rem; font-size: 0.65rem; color: #4a4a60;
+		text-transform: uppercase; letter-spacing: 0.08em;
+	}
+	.dropdown-meta {
+		padding: 0 0.75rem 0.4rem; font-size: 0.68rem; color: #8888a0;
 	}
 	.dropdown-item {
 		display: flex; align-items: center; gap: 0.5rem;
 		width: 100%; padding: 0.45rem 0.75rem;
 		background: none; border: none; color: #c4c4d4;
 		font-size: 0.78rem; font-family: inherit; cursor: pointer; text-align: left;
+		text-decoration: none;
 	}
 	.dropdown-item:hover  { background: #1e1e2e; }
-	.dropdown-item.active { color: #8ecf5e; }
 	.dropdown-item.muted  { color: #6b6b80; font-size: 0.72rem; }
-	.checkmark { margin-left: auto; color: #8ecf5e; font-size: 0.8rem; }
 	.dropdown-sep { height: 1px; background: #1e1e2e; margin: 0.25rem 0; }
 
 	/* ── Main ────────────────────────────────────────────────────────────── */
