@@ -8,14 +8,14 @@ integration, and publishing/pushing oRPG.lua to badges.
 
 ## Prerequisites
 
-| Tool | Version | Purpose |
-|---|---|---|
-| Bun | >= 1.1 | Server runtime |
-| Postgres | >= 15 | Game database |
-| ESP-IDF | v5.x | Beacon firmware build |
-| Anthropic account | — | DEEPDISH (Claude API) |
-| Onion DAO portal account | — | Lua Registry + Onion reward API |
-| Whisper-compatible STT | any | Voice challenge transcription |
+| Tool                     | Version | Purpose                         |
+| ------------------------ | ------- | ------------------------------- |
+| Bun                      | >= 1.1  | Server runtime                  |
+| Postgres                 | >= 15   | Game database                   |
+| ESP-IDF                  | v5.x    | Beacon firmware build           |
+| Anthropic account        | —       | DEEPDISH (Claude API)           |
+| Onion DAO portal account | —       | Lua Registry + Onion reward API |
+| Whisper-compatible STT   | any     | Voice challenge transcription   |
 
 ---
 
@@ -24,6 +24,7 @@ integration, and publishing/pushing oRPG.lua to badges.
 ### 1a. Provision infrastructure
 
 The game server needs:
+
 - A public HTTPS URL (e.g. `https://rpg.oniondao.dev`)
 - Postgres database (separate from the landing-2026 DB)
 - The following env vars (see `.env.example` for full list):
@@ -127,6 +128,7 @@ To change WiFi creds or server URL on an already-flashed beacon:
 ```
 
 Or open a 115200-baud serial terminal and type:
+
 ```
 SET wifi_ssid NewNetwork
 SET wifi_pass NewPass
@@ -137,11 +139,13 @@ RESET
 ### 2d. Verify a beacon is online
 
 After power-on the beacon will:
+
 1. Connect to WiFi.
 2. Start broadcasting `BEACON_HELLO` every 5 s over ESP-NOW.
 3. Register itself with the server (heartbeat every 30 s).
 
 Check the `beacons` table:
+
 ```sql
 SELECT beacon_id, challenge_id, online, updated_at FROM beacons ORDER BY updated_at DESC;
 ```
@@ -254,6 +258,7 @@ Push the new version to online badges as in 4c.
 ## 5. Pre-event checklist
 
 ### Server
+
 - [ ] `bun run db:init` applied to production DB
 - [ ] `GET /api/gauge` returns `{ current: 0, max: <n> }`
 - [ ] Test relay with sim: `bun run sim/cli.ts test smoke --challenge 0.1 --server https://rpg.oniondao.dev`
@@ -262,6 +267,7 @@ Push the new version to online badges as in 4c.
 - [ ] DEEPDISH: `ANTHROPIC_API_KEY` set; test via a direct NPC dialogue request
 
 ### Beacons (one per challenge)
+
 - [ ] All beacons appear online in `beacons` table
 - [ ] Each beacon's `challenge_id` matches the challenge it hosts
 - [ ] Prop enclosures labeled with `beacon_id` on the bottom
@@ -269,12 +275,14 @@ Push the new version to online badges as in 4c.
 - [ ] Spare beacon (pre-flashed `b-ketchup-01`) on hand for hot-swap
 
 ### Badges
+
 - [ ] oRPG.lua published to the registry
 - [ ] Test badge accepts and runs the script
 - [ ] Firmware-ext patches applied (if using extended hardware paths)
 - [ ] At least one hardware run of the Act 0 Ketchup Gauntlet end-to-end
 
 ### Festival operations
+
 - [ ] `BEACON_API_KEY` recorded in operations doc (needed for beacon replacement)
 - [ ] Onion supply gauge displayed on a visible screen (poll `GET /api/gauge`)
 - [ ] Staff briefed on the challenge flow and credential gates
@@ -284,26 +292,31 @@ Push the new version to online badges as in 4c.
 ## 6. Troubleshooting
 
 ### Beacon not appearing in `beacons` table
+
 - Check serial output (115200 baud) for WiFi connection errors.
 - Verify `server_url` and `api_key` match `BEACON_API_KEY` in server env.
 - Confirm the beacon's WiFi channel matches the AP channel.
 
 ### Relay returning 401
+
 - `BEACON_API_KEY` is unset (server runs open in dev; prod requires it).
 - Beacon `api_key` config doesn't match server `BEACON_API_KEY`.
 
 ### Voice challenge always failing
+
 - Set `STT_PROVIDER=mock` and `STT_MOCK_TRANSCRIPT=<expected-phrase>` for testing.
 - Confirm `STT_ENDPOINT` is reachable from the server's network.
 - Check beacon serial log for audio upload errors.
 
 ### DEEPDISH not responding / dialogue challenge stuck
+
 - Verify `ANTHROPIC_API_KEY` is valid.
 - Check server logs for `anthropic` client errors.
 - NPC challenges fall back to pre-written content strings on AI errors;
   the challenge `continued: true` keeps the session alive for a retry.
 
 ### Onion reward not arriving to player
+
 - Rewards are async: the player must approve in their Onion DAO portal.
 - Check `onion_rewards` table for the reward row and its `status` column.
 - If `status = failed`: re-POST to the Onion DAO API using the same
@@ -312,6 +325,7 @@ Push the new version to online badges as in 4c.
   must be able to POST to it).
 
 ### `bun run db:init` fails
+
 - `DATABASE_URL` not set or incorrect.
 - Postgres user lacks CREATE TABLE privilege.
 - Schema is idempotent — safe to re-run after fixing credentials.

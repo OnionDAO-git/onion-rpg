@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import type { AuthUser } from '$lib/server/onion/session';
 
 	let { children, data } = $props<{
@@ -11,7 +12,7 @@
 
 <div class="site">
 	<header class="site-header">
-		<a class="brand" href="/">
+		<a class="brand" href={resolve('/')}>
 			<span class="brand-icon">🧅</span>
 			<span class="brand-text">ONION RPG</span>
 			<span class="brand-sub">The Great Onion Shortage</span>
@@ -23,11 +24,11 @@
 					{user.name}
 				</span>
 				{#if user.isAdmin}
-					<a class="nav-link" href="/admin">Ops Console</a>
+					<a class="nav-link" href={resolve('/admin')}>Ops Console</a>
 				{/if}
-				<a class="nav-link muted" href="/auth/logout" data-sveltekit-reload>Sign out</a>
+				<a class="nav-link muted" href={resolve('/auth/logout')} data-sveltekit-reload>Sign out</a>
 			{:else}
-				<a class="nav-link" href="/admin">Log in</a>
+				<a class="nav-link" href={resolve('/auth/login')}>Log in</a>
 			{/if}
 		</nav>
 	</header>

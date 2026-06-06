@@ -1,8 +1,6 @@
 import { error, redirect } from '@sveltejs/kit';
-import { env } from '$env/dynamic/private';
+import { onionLoginRedirect } from '$lib/server/onion/login';
 import type { LayoutServerLoad } from './$types';
-
-const LOGIN_BASE = () => env.ONION_API_BASE_URL || 'https://oniondao.dev';
 
 /**
  * Gate the entire ops console behind an Onion DAO admin login.
@@ -17,8 +15,7 @@ const LOGIN_BASE = () => env.ONION_API_BASE_URL || 'https://oniondao.dev';
  */
 export const load: LayoutServerLoad = async ({ locals, url }) => {
 	if (!locals.user) {
-		const returnTo = encodeURIComponent(url.href);
-		redirect(302, `${LOGIN_BASE()}/login?redirectTo=${returnTo}`);
+		redirect(302, onionLoginRedirect(url));
 	}
 	if (!locals.user.isAdmin) {
 		error(403, 'Admin access required — the ops console is for Onion DAO admins only.');
