@@ -46,18 +46,37 @@ localhost value in `.env` (used for `bun dev`) is ignored inside the stack.
 
 ## Target 2 — Railway
 
+One-time setup (everything else is automated):
+
+1. Create a Railway account → <https://railway.com>
+2. `brew install railway` (or `npm i -g @railway/cli`)
+3. `railway login` — opens a browser. The script auto-runs this if you're not
+   logged in.
+4. _Optional:_ create a workspace/team in the dashboard if you want to deploy
+   somewhere other than your personal workspace — you'll pick it in step ↓.
+
+Then:
+
 ```bash
-brew install railway        # one-time
-./deploy/railway.sh         # create/link project, add Postgres, push vars, deploy
+./deploy/railway.sh         # pick workspace + project, add Postgres, push vars, deploy
 ```
 
-The script provisions a `Postgres` service, references it as
+On the first run (or any run with `RELINK=1`) the script asks whether to **link
+an existing project** or **create a new one**, and in both cases lets you
+**choose the workspace/team** to deploy into:
+
+```bash
+RELINK=1 ./deploy/railway.sh   # re-pick workspace/project for this directory
+```
+
+After selection it provisions a `Postgres` service, references it as
 `DATABASE_URL=${{Postgres.DATABASE_URL}}`, pushes every other key from `.env`,
 deploys via the `Dockerfile`, assigns a `*.up.railway.app` domain, and points
-`ONION_CALLBACK_URL` at it.
+`ONION_CALLBACK_URL` at it. Nothing else needs clicking in the dashboard.
 
-Override names with env vars: `PROJECT_NAME`, `APP_SERVICE`, `PG_SERVICE`,
-`ENVIRONMENT`. Re-run anytime to push new vars or redeploy.
+Override names with env vars: `PROJECT_NAME` (used when creating a new project),
+`APP_SERVICE`, `PG_SERVICE`, `ENVIRONMENT`. Re-run anytime to push new vars or
+redeploy.
 
 ---
 

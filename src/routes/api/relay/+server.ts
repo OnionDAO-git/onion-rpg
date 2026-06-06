@@ -28,6 +28,7 @@ import type {
 	VoiceCaptureSubmitBody,
 	MerchantInputBody,
 	NpcDialogueTurnBody,
+	BeaconHelloBody,
 	ErrorBody
 } from '$lib/shared/protocol';
 import {
@@ -68,6 +69,9 @@ async function dispatch(
 	body: unknown
 ): Promise<string[]> {
 	switch (type) {
+		case MsgType.BEACON_HELLO:
+			return handleBeaconHello(beaconId, body as BeaconHelloBody);
+
 		case MsgType.OPERATIVE_IDENTIFY:
 			return handleIdentify(msgId, body as OperativeIdentifyBody);
 
@@ -92,6 +96,41 @@ async function dispatch(
 }
 
 // ── Message handlers ──────────────────────────────────────────────────────
+
+/**
+ * BEACON_HELLO: a beacon announcing itself (fires ~every 30s after it boots and
+ * joins WiFi). Upsert the beacons row, mark it online, and log to the server
+ * console — but only on the online transition, so we don't spam every heartbeat.
+ * No response frames are expected; the firmware ignores them.
+ */
+async function handleBeaconHello(beaconId: string, body: BeaconHelloBody): Promise<string[]> {
+	const id = body?.b || beaconId;
+	if (!id) return [];
+	const challengeId = body?.c ?? null;
+	const mac = body?.m ?? null;
+
+	// Was this beacon already online before this hello? Used to log once.
+	const [prev] = await sql<{ online: boolean }[]>`SELECT online FROM beacons WHERE id = ${id}`;
+	const wasOnline = prev?.online === true;
+
+	await sql`
+		INSERT INTO beacons (id, challenge_id, name, espnow_mac, source, online, last_seen_at)
+		VALUES (${id}, ${challengeId}, ${id}, ${mac}, 'hardware', TRUE, now())
+		ON CONFLICT (id) DO UPDATE SET
+			challenge_id  = COALESCE(EXCLUDED.challenge_id, beacons.challenge_id),
+			espnow_mac    = COALESCE(EXCLUDED.espnow_mac, beacons.espnow_mac),
+			online        = TRUE,
+			last_seen_at  = now()
+	`;
+
+	if (!wasOnline) {
+		const parts = [`challenge=${challengeId ?? 'none'}`];
+		if (mac) parts.push(`mac=${mac}`);
+		console.log(`[beacon] ✅ "${id}" connected (${parts.join(', ')})`);
+	}
+
+	return [];
+}
 
 /** OPERATIVE_IDENTIFY: upsert operative, return IDENTIFY_ACK with state snapshot. */
 async function handleIdentify(

@@ -99,7 +99,9 @@ static bool wifi_connect(void) {
     wifi_config_t wifi_cfg = {};
     strlcpy((char *)wifi_cfg.sta.ssid,     g_cfg.wifi_ssid, sizeof(wifi_cfg.sta.ssid));
     strlcpy((char *)wifi_cfg.sta.password, g_cfg.wifi_pass, sizeof(wifi_cfg.sta.password));
-    wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    /* WPA-or-better so we join WPA/WPA2-mixed venue guest APs (e.g. "CIC Guest"),
+     * not just pure WPA2. */
+    wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA_PSK;
 
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);

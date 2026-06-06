@@ -32,6 +32,9 @@ extern "C" {
 #define BEACON_DEFAULT_LANDMARK     ""
 #endif
 
+/* Hardcoded venue WiFi so a freshly-flashed beacon auto-joins and reaches the
+ * server with zero provisioning. Override per-beacon via NVS (`SET wifi_ssid`)
+ * or /spiffs/beacon_config.json if deployed on a different network. */
 #ifndef BEACON_DEFAULT_WIFI_SSID
 #define BEACON_DEFAULT_WIFI_SSID    "CIC Guest"
 #endif

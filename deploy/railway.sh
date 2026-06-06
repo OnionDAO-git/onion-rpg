@@ -2,17 +2,32 @@
 #
 # All-in-one RAILWAY deploy for Onion RPG.
 #
-#   ./deploy/railway.sh        # create/link project, provision Postgres,
+#   ./deploy/railway.sh        # pick workspace + project, provision Postgres,
 #                              # push env vars, deploy, and assign a domain
 #
-# Idempotent: safe to re-run to push new env vars or redeploy.
+# On first run (or with RELINK=1) it prompts you to either LINK an existing
+# project or CREATE a new one — and in both cases lets you choose which
+# Railway workspace/team to deploy into. Idempotent: re-run to push new env
+# vars or redeploy.
+#
+# ── One-time Railway setup ────────────────────────────────────────────────
+#   1. Create a Railway account .......... https://railway.com
+#   2. Install the CLI ................... brew install railway
+#                                          (or: npm i -g @railway/cli)
+#   3. Log in ............................ railway login   (opens a browser;
+#                                          the script auto-runs this if needed)
+#   4. (Optional) create a workspace/team in the dashboard if you want to
+#      deploy somewhere other than your personal one — you'll pick it below.
+#   That's it. Postgres, the app service, env vars, and the domain are all
+#   provisioned by this script; nothing else to click in the dashboard.
 #
 # Requirements:
-#   - Railway CLI v3+ ........ https://docs.railway.com/guides/cli  (`brew install railway`)
+#   - Railway CLI v3+ ........ https://docs.railway.com/guides/cli
 #   - A Railway account ...... `railway login` (the script will prompt if needed)
 #
 # Tunables (env vars):
-#   PROJECT_NAME   default: onion-rpg     Railway project name
+#   RELINK=1       force re-selecting workspace/project even if already linked
+#   PROJECT_NAME   default: onion-rpg     name used when CREATING a new project
 #   APP_SERVICE    default: onion-rpg     app service name
 #   PG_SERVICE     default: Postgres      Postgres service name (Railway's default)
 #   ENVIRONMENT    default: production    Railway environment
@@ -58,11 +73,39 @@ for key in ANTHROPIC_API_KEY ONION_EXTERNAL_API_KEY; do
   [ -z "$(get_env "$key")" ] && echo "  WARNING: $key is empty in .env — set it or related features will fail"
 done
 
-echo "==> Linking Railway project ($PROJECT_NAME)"
-if ! railway status >/dev/null 2>&1; then
-  # No linked project in this dir yet — create one.
-  railway init --name "$PROJECT_NAME"
+echo "==> Selecting Railway workspace + project"
+if railway status >/dev/null 2>&1 && [ "${RELINK:-0}" != "1" ]; then
+  echo "  Already linked in this directory:"
+  railway status 2>/dev/null | sed 's/^/    /' || true
+  echo "  (re-run with RELINK=1 to pick a different workspace/project)"
+else
+  # Either nothing is linked yet, or the user asked to RELINK. Let them choose
+  # to attach to an existing project or spin up a new one — both flows prompt
+  # for the workspace/team to use.
+  echo
+  echo "  How do you want to target a Railway project?"
+  echo "    [l] LINK an existing project   (pick workspace -> project -> environment)"
+  echo "    [n] NEW project named '$PROJECT_NAME'  (pick the workspace to create it in)"
+  printf "  Selection [l/n] (default: l): "
+  # Read from the terminal even if the script was piped; tolerate EOF under set -e.
+  choice=""
+  read -r choice </dev/tty 2>/dev/null || choice=""
+  case "$choice" in
+    n|N)
+      echo "  Creating a new project..."
+      railway init --name "$PROJECT_NAME"
+      ;;
+    *)
+      echo "  Linking an existing project (follow the interactive picker)..."
+      railway link
+      ;;
+  esac
 fi
+
+# Make sure the chosen environment is the active one for all commands below.
+railway environment "$ENVIRONMENT" >/dev/null 2>&1 \
+  && echo "  using environment: $ENVIRONMENT" \
+  || echo "  note: environment '$ENVIRONMENT' not found — using the linked default"
 
 echo "==> Provisioning Postgres service ($PG_SERVICE)"
 # `add` is not strictly idempotent; ignore the error if it already exists.
