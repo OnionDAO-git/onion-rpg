@@ -28,7 +28,7 @@
 				{/if}
 				<a class="nav-link muted" href={resolve('/auth/logout')} data-sveltekit-reload>Sign out</a>
 			{:else}
-				<a class="nav-link" href={resolve('/auth/login')}>Log in</a>
+				<a class="nav-link" href={resolve('/auth/login?redirectTo=/admin')}>Log in</a>
 			{/if}
 		</nav>
 	</header>
