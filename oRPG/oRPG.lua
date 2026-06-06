@@ -53,6 +53,128 @@ local net    = require('lib.net')
 local ui     = require('lib.ui')
 local router = require('lib.router')
 
+-- ── Button compatibility shim ─────────────────────────────────────────────
+-- Firmware builds have exposed badge input with a few different key names.
+-- Normalise them once so every screen can keep reading onion.buttons().
+
+local _raw_buttons = onion.buttons
+
+local BUTTON_ALIASES = {
+    up     = { 'up', 'UP', 'Up', 'u', 'U', 'arrow_up', 'ArrowUp', 'dpad_up', 'dpadUp', 'btn_up', 'button_up', 'nav_up' },
+    down   = { 'down', 'DOWN', 'Down', 'd', 'D', 'arrow_down', 'ArrowDown', 'dpad_down', 'dpadDown', 'btn_down', 'button_down', 'nav_down' },
+    left   = { 'left', 'LEFT', 'Left', 'l', 'L', 'arrow_left', 'ArrowLeft', 'dpad_left', 'dpadLeft', 'btn_left', 'button_left', 'nav_left' },
+    right  = { 'right', 'RIGHT', 'Right', 'r', 'R', 'arrow_right', 'ArrowRight', 'dpad_right', 'dpadRight', 'btn_right', 'button_right', 'nav_right' },
+    select = { 'select', 'SELECT', 'Select', 'sel', 'SEL', 'ok', 'OK', 'a', 'A', 'enter', 'Enter', 'start', 'center' },
+    cancel = { 'cancel', 'CANCEL', 'Cancel', 'back', 'BACK', 'b', 'B', 'esc', 'ESC', 'escape', 'Escape', 'menu' },
+}
+
+-- Default pin map for the SpacemanDev e-ink badge. Override by defining
+-- ORPG_BUTTON_PINS before loading this script if a board revision differs.
+local DEFAULT_BUTTON_PINS = {
+    up = 41, down = 40, left = 42, right = 39, select = 15, cancel = 16,
+}
+
+local function is_pressed_value(v)
+    return v == true or v == 1 or v == '1' or v == 'true' or
+        v == 'TRUE' or v == 'pressed' or v == 'down'
+end
+
+local function read_named_button(raw, aliases)
+    if type(raw) ~= 'table' then return false end
+    for _, key in ipairs(aliases) do
+        if is_pressed_value(raw[key]) then return true end
+    end
+    return false
+end
+
+local function mark_pressed(out, value)
+    if type(value) ~= 'string' then return end
+    local lower = value:lower()
+    for name, aliases in pairs(BUTTON_ALIASES) do
+        for _, alias in ipairs(aliases) do
+            if lower == tostring(alias):lower() then
+                out[name] = true
+                return
+            end
+        end
+    end
+end
+
+local function merge_button_bucket(out, bucket)
+    if type(bucket) == 'string' then
+        mark_pressed(out, bucket)
+    elseif type(bucket) == 'table' then
+        for name, aliases in pairs(BUTTON_ALIASES) do
+            if read_named_button(bucket, aliases) then out[name] = true end
+        end
+        for _, value in ipairs(bucket) do
+            mark_pressed(out, value)
+        end
+    end
+end
+
+local function read_gpio_pin(pin)
+    if not pin then return nil end
+    local readers = { 'gpio_read', 'gpio_get', 'digital_read', 'pin_read', 'read_gpio' }
+    for _, reader_name in ipairs(readers) do
+        local reader = onion[reader_name]
+        if type(reader) == 'function' then
+            local ok, value = pcall(reader, pin)
+            if ok and value ~= nil then return value end
+        end
+    end
+    if type(onion.gpio) == 'function' then
+        local ok, value = pcall(onion.gpio, pin)
+        if ok and value ~= nil then return value end
+    end
+    return nil
+end
+
+local function read_gpio_button(name)
+    local pins = rawget(_G, 'ORPG_BUTTON_PINS') or DEFAULT_BUTTON_PINS
+    local value = read_gpio_pin(pins[name])
+    -- Badge buttons are normally pulled high and go low when pressed.
+    return value == false or value == 0 or value == '0' or value == 'LOW'
+end
+
+local function normalised_buttons()
+    local raw = {}
+    if type(_raw_buttons) == 'function' then
+        local ok, value = pcall(_raw_buttons)
+        if ok and value ~= nil then raw = value end
+    end
+
+    local out = {
+        up = false, down = false, left = false, right = false,
+        select = false, cancel = false,
+    }
+
+    if type(raw) == 'string' then
+        mark_pressed(out, raw)
+    elseif type(raw) == 'table' then
+        for name, aliases in pairs(BUTTON_ALIASES) do
+            out[name] = read_named_button(raw, aliases)
+        end
+        for _, value in ipairs(raw) do
+            mark_pressed(out, value)
+        end
+        merge_button_bucket(out, raw.pressed)
+        merge_button_bucket(out, raw.down)
+        merge_button_bucket(out, raw.held)
+        merge_button_bucket(out, raw.buttons)
+    end
+
+    for name in pairs(out) do
+        if not out[name] and read_gpio_button(name) then
+            out[name] = true
+        end
+    end
+
+    return out
+end
+
+onion.buttons = normalised_buttons
+
 -- ── Constants ─────────────────────────────────────────────────────────────
 
 local GAME_VERSION  = '0.1.0'

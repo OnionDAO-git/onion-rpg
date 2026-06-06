@@ -9,9 +9,10 @@ Hardware
 Easiest path — one command (firmware + config)
 
 cd onion-rpg/beacon/
+export BEACON_API_KEY="<the server BEACON_API_KEY>"
 ./scripts/flash_beacon.sh 0.1 \
  --wifi-ssid "CIC Guest" --wifi-pass "1nnovation" \
- --server-url https://onion-rpg.example.com --api-key sk-...
+ --server-url https://rpg.oniondao.dev --api-key "$BEACON_API_KEY"
 flash_beacon.sh <challengeId> auto-detects the ESP32-C3 serial port, then builds + flashes firmware (idf.py set-target esp32c3 build && idf.py -p <port> flash) and flashes the SPIFFS config
 in one shot.
 
@@ -21,7 +22,7 @@ Use this to set/change a specific beacon's identity without reflashing firmware:
 ./scripts/flash_spiffs.sh \
  --challenge 0.1 --beacon-id b-ketchup-01 --port /dev/cu.usbmodemXXX \
  --wifi-ssid "CIC Guest" --wifi-pass "1nnovation" \
- --server-url "https://onion-rpg.example.com" --api-key "sk-..."
+ --server-url "https://rpg.oniondao.dev" --api-key "$BEACON_API_KEY"
 Or, no flash tool needed, set config in NVS over serial:
 ./scripts/provision_serial.sh --port /dev/cu.usbmodemXXX --challenge 0.1 \
  --wifi-ssid "CIC Guest" --wifi-pass "1nnovation"
@@ -32,7 +33,7 @@ What identifies "a given beacon"
 - --challenge <id> — pulls per-challenge params from beacon/challenges/<id>.json.
 - Config load priority: /spiffs/beacon_config.json (from flash_spiffs.sh) > NVS (provision_serial.sh) > compile-time defaults in beacon/main/beacon_config.h.
 
-On boot the beacon registers with the server (/api/relay) and heartbeats every 30s.
+On boot the beacon registers with the server (/api/relay) and heartbeats every 30s. Production requires the flashed `api_key` to match the server's `BEACON_API_KEY`; without it `/api/relay` returns `401 Unauthorized`.
 
 One thing to flag
 

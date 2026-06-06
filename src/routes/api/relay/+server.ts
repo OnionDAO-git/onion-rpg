@@ -37,18 +37,13 @@ import {
 	submitChallenge,
 	getGameState
 } from '$lib/server/engine/index';
-import { applyRoll } from '$lib/server/engine/combat';
+import { getChallenge } from '$lib/server/challenges/registry';
+import { applyRoll, openCombat } from '$lib/server/engine/combat';
 import { listInventory } from '$lib/server/engine/inventory';
 import { sql } from '$lib/server/db/index';
 import type { RequestHandler } from './$types';
 
 // ── Helpers ───────────────────────────────────────────────────────────────
-
-let _msgIdCtr = 1;
-function nextMsgId(): number {
-	_msgIdCtr = (_msgIdCtr + 1) & 0xffff;
-	return _msgIdCtr;
-}
 
 function encodeError(msgId: number, code: string, msg?: string): string[] {
 	const frames = encodeMessage(MsgType.ERROR, msgId, { code, msg } satisfies ErrorBody);
@@ -141,7 +136,7 @@ async function handleIdentify(
 	const op = await resolveOperative(body.h, body.o);
 	const gs = await getGameState(op.id);
 	const inventory = await listInventory(op.id);
-	return encodeResponse(MsgType.IDENTIFY_ACK, nextMsgId(), {
+	return encodeResponse(MsgType.IDENTIFY_ACK, msgId, {
 		id: op.id,
 		registered: op.registered,
 		callsign: op.callsign,
@@ -164,7 +159,7 @@ async function handleChallengeBegin(
 	const op = await resolveOperative(body.h);
 	try {
 		const { attemptId, content } = await beginChallenge(op.id, body.c);
-		return encodeResponse(MsgType.CHALLENGE_INTRO, nextMsgId(), {
+		return encodeResponse(MsgType.CHALLENGE_INTRO, msgId, {
 			attemptId,
 			challengeId: body.c,
 			content
@@ -188,17 +183,51 @@ async function handleCombatRoll(
 	// already open. Here we find it by challenge_id.
 	// The full flow: badge does CHALLENGE_BEGIN first which creates the attempt;
 	// then COMBAT_ROLL_REQUEST comes after. We look up the latest active session.
-	const [sessionRow] = await sql<{ id: string; operativeId: string; serverNonce: string }[]>`
-		SELECT id, operative_id, server_nonce FROM combat_sessions
+	let [sessionRow] = await sql<{ id: string; operativeId: string; attemptId: string | null; serverNonce: string }[]>`
+		SELECT id, operative_id, attempt_id, server_nonce FROM combat_sessions
 		WHERE challenge_id = ${body.c} AND status = 'active'
 		ORDER BY created_at DESC LIMIT 1
 	`;
 
 	if (!sessionRow) {
-		// No active session — the badge should CHALLENGE_BEGIN first. But if a
-		// roll comes in without a prior begin (e.g., after reconnect) we can't
-		// open a session without the hardwareId. Return a clear error.
-		return encodeError(msgId, 'NO_SESSION', 'begin the challenge first (CHALLENGE_BEGIN)');
+		const [attempt] = await sql<{ id: string; operativeId: string }[]>`
+			SELECT id, operative_id FROM challenge_attempts
+			WHERE challenge_id = ${body.c} AND status = 'started'
+			ORDER BY started_at DESC LIMIT 1
+		`;
+		if (!attempt) {
+			return encodeError(msgId, 'NO_SESSION', 'begin the challenge first (CHALLENGE_BEGIN)');
+		}
+
+		const challenge = getChallenge(body.c);
+		if (!challenge || challenge.type !== 'combat') {
+			return encodeError(msgId, 'BAD_REQUEST', `challenge ${body.c} is not combat`);
+		}
+		const combat = (challenge.content?.combat ?? {}) as {
+			enemyHp?: number;
+			enemyHpPerWave?: number[];
+			operativeHp?: number;
+			wavesRequired?: number;
+			ttlSeconds?: number;
+		};
+		const opened = await openCombat({
+			operativeId: attempt.operativeId,
+			challengeId: body.c,
+			attemptId: attempt.id,
+			enemyHp: combat.enemyHp ?? combat.enemyHpPerWave?.[0],
+			operativeHp: combat.operativeHp,
+			wavesRequired: combat.wavesRequired,
+			ttlSeconds: combat.ttlSeconds
+		});
+		return encodeResponse(MsgType.COMBAT_ROLL_RESPONSE, msgId, {
+			s: opened.id,
+			n: opened.serverNonce,
+			enemyHp: opened.enemyHp,
+			opHp: opened.operativeHp,
+			wave: opened.wave,
+			wavesReq: opened.wavesRequired,
+			st: opened.status
+		});
 	}
 
 	const op = await sql<{ attestPubkey: string | null }[]>`
@@ -211,7 +240,16 @@ async function handleCombatRoll(
 		: undefined;
 
 	const session = await applyRoll(sessionRow.id, inRoll, attestPubkey ?? undefined);
-	return encodeResponse(MsgType.COMBAT_ROLL_RESPONSE, nextMsgId(), {
+	if (session.status !== 'active') {
+		await submitChallenge(
+			sessionRow.operativeId,
+			body.c,
+			{ action: 'roll', ketchup: Boolean((body as unknown as Record<string, unknown>).ketchup) },
+			sessionRow.attemptId ?? undefined
+		);
+	}
+
+	return encodeResponse(MsgType.COMBAT_ROLL_RESPONSE, msgId, {
 		s: session.id,
 		n: session.serverNonce,
 		enemyHp: session.enemyHp,
@@ -259,7 +297,7 @@ async function handleMerchant(
 	}
 
 	const result = await submitChallenge(attempt.operativeId, body.c, { seq: body.seq }, attempt.id);
-	return encodeResponse(MsgType.MERCHANT_RESULT, nextMsgId(), {
+	return encodeResponse(MsgType.MERCHANT_RESULT, msgId, {
 		passed: result.passed,
 		message: result.message,
 		continued: result.continued ?? false
@@ -289,7 +327,7 @@ async function handleNpcDialogue(
 			body: JSON.stringify({ challengeId: body.c, sessionId: body.s, utterance: body.t })
 		});
 		const data = (await res.json()) as { reply: string; sessionId: string; done?: boolean };
-		return encodeResponse(MsgType.NPC_DIALOGUE_REPLY, nextMsgId(), {
+		return encodeResponse(MsgType.NPC_DIALOGUE_REPLY, msgId, {
 			reply: data.reply,
 			sessionId: data.sessionId,
 			done: data.done ?? false

@@ -1,0 +1,18 @@
+Command: ninja all
+[1/9] Performing build step for 'bootloader'
+[1/1] cd /Users/spacemandev/Projects/oniondao-git/onion-rpg/beacon/build/bootloader/esp-idf/esptool_py && /Users/spacemandev/.espressif/python_env/idf5.5_py3.13_env/bin/python /Users/spacemandev/.espressif/v5.5.4/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /Users/spacemandev/Projects/oniondao-git/onion-rpg/beacon/build/bootloader/bootloader.bin
+Bootloader binary size 0x51e0 bytes. 0x2e20 bytes (36%) free.
+[2/9] No install step for 'bootloader'
+[3/9] Completed 'bootloader'
+[4/9] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/beacon_hello.c.obj
+[5/9] Linking C static library esp-idf/main/libmain.a
+[6/9] Generating esp-idf/esp_system/ld/sections.ld
+[7/9] Linking CXX executable onion-beacon.elf
+[8/9] Generating binary image from built executable
+esptool.py v4.12.dev2
+Creating esp32c3 image...
+Merged 1 ELF section
+Successfully created esp32c3 image.
+Generated /Users/spacemandev/Projects/oniondao-git/onion-rpg/beacon/build/onion-beacon.bin
+[9/9] cd /Users/spacemandev/Projects/oniondao-git/onion-rpg/beacon/build/esp-idf/esptool_py && /Users/spacemandev/.espressif/python_env/idf5.5_py3.13_env/bin/python /Users/spacemandev/.espressif/v5.5.4/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /Users/spacemandev/Projects/oniondao-git/onion-rpg/beacon/build/partition_table/partition-table.bin /Users/spacemandev/Projects/oniondao-git/onion-rpg/beacon/build/onion-beacon.bin
+onion-beacon.bin binary size 0xefad0 bytes. Smallest app partition is 0x160000 bytes. 0x70530 bytes (32%) free.

@@ -71,6 +71,17 @@ end
 
 -- ── Text helpers ──────────────────────────────────────────────────────────
 
+local function font_char_width(font)
+    if font == 'large' then return ui.FONT_LARGE_W end
+    if font == 'bold' then return ui.FONT_BOLD_W end
+    return ui.FONT_SMALL_W
+end
+
+local function max_chars_for_width(x, w, font)
+    local available = w or (ui.W - x - 6)
+    return math.max(1, math.floor(available / font_char_width(font)))
+end
+
 -- Wrap `text` into lines of at most `max_chars` characters, breaking on spaces.
 function ui.wrap_text(text, max_chars)
     max_chars = max_chars or 36
@@ -93,13 +104,29 @@ end
 
 -- Draw a table of lines starting at (x, y) with given line_height and font.
 -- Returns the y coordinate after the last line.
-function ui.body_text(lines, x, y, line_height, font)
+function ui.body_text(lines, x, y, line_height, font, w, max_lines)
     x           = x           or 6
     y           = y           or 30
     line_height = line_height or ui.LH_SMALL
     font        = font        or 'small'
-    onion.display_lines(lines, x, y, line_height, { font = font, clear = false })
-    return y + #lines * line_height
+    if type(lines) == 'string' then lines = { lines } end
+
+    local wrapped = {}
+    local max_chars = max_chars_for_width(x, w, font)
+    for _, line in ipairs(lines or {}) do
+        local parts = ui.wrap_text(tostring(line or ''), max_chars)
+        for _, part in ipairs(parts) do
+            wrapped[#wrapped + 1] = part
+        end
+    end
+    if #wrapped == 0 then wrapped[1] = '' end
+
+    local limit = max_lines or #wrapped
+    for i = 1, math.min(#wrapped, limit) do
+        onion.display_text(wrapped[i], x, y + (i - 1) * line_height,
+            { font = font, clear = false })
+    end
+    return y + math.min(#wrapped, limit) * line_height
 end
 
 -- ── HUD bar ───────────────────────────────────────────────────────────────

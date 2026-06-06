@@ -25,6 +25,7 @@ BEACON_ID=""
 WIFI_SSID=""
 WIFI_PASS=""
 LANDMARK=""
+ALLOW_EMPTY_API_KEY=0
 
 # ── Parse args ─────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -33,6 +34,7 @@ while [[ $# -gt 0 ]]; do
         --port)         PORT="$2";          shift 2 ;;
         --server-url)   SERVER_URL="$2";    shift 2 ;;
         --api-key)      API_KEY="$2";       shift 2 ;;
+        --allow-empty-api-key) ALLOW_EMPTY_API_KEY=1; shift ;;
         --beacon-id)    BEACON_ID="$2";     shift 2 ;;
         --wifi-ssid)    WIFI_SSID="$2";     shift 2 ;;
         --wifi-pass)    WIFI_PASS="$2";     shift 2 ;;
@@ -43,9 +45,27 @@ done
 
 if [[ -z "$CHALLENGE_ID" ]]; then
     echo "Usage: $0 --challenge <id> --port <dev> [options]"
-    echo "  Options: --server-url --api-key --beacon-id --wifi-ssid --wifi-pass --landmark"
+    echo "  Options: --server-url --api-key --allow-empty-api-key --beacon-id --wifi-ssid --wifi-pass --landmark"
     exit 1
 fi
+
+if [[ -z "$API_KEY" && -n "${BEACON_API_KEY:-}" ]]; then
+    API_KEY="$BEACON_API_KEY"
+fi
+
+case "$SERVER_URL" in
+    http://localhost*|https://localhost*|http://127.0.0.1*|https://127.0.0.1*|https://onion-rpg.example.com)
+        ;;
+    *)
+        if [[ -z "$API_KEY" && "$ALLOW_EMPTY_API_KEY" -eq 0 ]]; then
+            echo "ERROR: --api-key is required for server URL: $SERVER_URL" >&2
+            echo "       Production /api/relay rejects unauthenticated beacon registration." >&2
+            echo "       Pass --api-key \"\$BEACON_API_KEY\" or export BEACON_API_KEY first." >&2
+            echo "       Use --allow-empty-api-key only for an intentionally open dev server." >&2
+            exit 1
+        fi
+        ;;
+esac
 
 # ── Paths ──────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,7 +95,7 @@ cat > "$TMP_DIR/beacon_config.json" <<EOF
 }
 EOF
 echo "beacon_config.json:"
-cat "$TMP_DIR/beacon_config.json"
+sed -E 's/("api_key":[[:space:]]*")[^"]*/\1***masked***/' "$TMP_DIR/beacon_config.json"
 
 # ── Copy challenge config ──────────────────────────────────────────────
 CHALLENGE_SRC="$CHALLENGES_DIR/${CHALLENGE_ID}.json"

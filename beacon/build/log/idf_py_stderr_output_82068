@@ -1,0 +1,67 @@
+Command: /Users/spacemandev/.espressif/python_env/idf5.5_py3.13_env/bin/python /Users/spacemandev/.espressif/v5.5.4/esp-idf/tools/idf_monitor.py -p /dev/cu.usbmodem1101 -b 115200 --toolchain-prefix riscv32-esp-elf- --target esp32c3 --revision 3 --decode-panic backtrace /Users/spacemandev/Projects/oniondao-git/onion-rpg/beacon/build/onion-beacon.elf /Users/spacemandev/Projects/oniondao-git/onion-rpg/beacon/build/bootloader/bootloader.elf -m '/Users/spacemandev/.espressif/python_env/idf5.5_py3.13_env/bin/python' '/Users/spacemandev/.espressif/v5.5.4/esp-idf/tools/idf.py' '-p' '/dev/cu.usbmodem1101'
+[0;33m--- esp-idf-monitor 1.9.0 on /dev/cu.usbmodem1101 115200[0m
+[0;33m--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H[0m
+[0m--- 0x4038384a: [0;33mrv_utils_wait_for_intr[0m[0m at [0;32m/Users/spacemandev/.espressif/v5.5.4/esp-idf/components/riscv/include/riscv/rv_utils.h[0m[0m:[1;31m79[0m
+[0m--- (inlined by) [0;33mesp_cpu_wait_for_intr[0m[0m at [0;32m/Users/spacemandev/.espressif/v5.5.4/esp-idf/components/esp_hw_support/cpu.c[0m[0m:[1;31m62[0m
+[0m--- 0x403cbf10: [0;33mesp_bootloader_get_description[0m[0m at [0;32m/Users/spacemandev/.espressif/v5.5.4/esp-idf/components/esp_bootloader_format/esp_bootloader_desc.c[0m[0m:[1;31m39[0m
+[0m--- 0x403ce710: [0;33mesp_flash_encryption_enabled[0m[0m at [0;32m/Users/spacemandev/.espressif/v5.5.4/esp-idf/components/bootloader_support/src/flash_encrypt.c[0m[0m:[1;31m89[0m
+[0m--- 0x403cbf1a: [0;33mcall_start_cpu0[0m[0m at [0;32m/Users/spacemandev/.espressif/v5.5.4/esp-idf/components/bootloader/subproject/main/bootloader_start.c[0m[0m:[1;31m27[0m
+[0m--- 0x4209d122: [0;33m_svfprintf_r[0m[0m at [0;32m/builds/idf/crosstool-NG/.build/riscv32-esp-elf/src/newlib/newlib/libc/stdio/vfprintf.c[0m[0m:[1;31m654[0m
+[0;33m--- Stack dump detected[0m
+[0m--- 0x4209d126: [0;33m_svfprintf_r[0m[0m at [0;32m/builds/idf/crosstool-NG/.build/riscv32-esp-elf/src/newlib/newlib/libc/stdio/vfprintf.c[0m[0m:[1;31m654[0m
+[0m--- 0x4209aa7c: [0;33msnprintf[0m[0m at [0;32m/builds/idf/crosstool-NG/.build/riscv32-esp-elf/src/newlib/newlib/libc/stdio/snprintf.c[0m[0m:[1;31m87[0m
+[0m--- 0x40380001: [0;33m_vector_table[0m[0m at [0;32m/Users/spacemandev/.espressif/v5.5.4/esp-idf/components/riscv/vectors_intc.S[0m[0m:[1;31m54[0m
+[0m
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/spacemandev/.espressif/python_env/idf5.5_py3.13_env/lib/python3.13/site-packages/esp_idf_monitor/__main__.py", line 4, in <module>
+    main()
+    ~~~~^^
+  File "/Users/spacemandev/.espressif/python_env/idf5.5_py3.13_env/lib/python3.13/site-packages/esp_idf_monitor/idf_monitor.py", line 529, in main
+    monitor.main_loop()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/Users/spacemandev/.espressif/python_env/idf5.5_py3.13_env/lib/python3.13/site-packages/esp_idf_monitor/idf_monitor.py", line 254, in main_loop
+    self._main_loop()
+    ~~~~~~~~~~~~~~~^^
+  File "/Users/spacemandev/.espressif/python_env/idf5.5_py3.13_env/lib/python3.13/site-packages/esp_idf_monitor/idf_monitor.py", line 384, in _main_loop
+    super()._main_loop()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/Users/spacemandev/.espressif/python_env/idf5.5_py3.13_env/lib/python3.13/site-packages/esp_idf_monitor/idf_monitor.py", line 303, in _main_loop
+    self.serial_handler.handle_serial_input(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        data,
+        ^^^^^
+    ...<4 lines>...
+        self.check_gdb_stub_and_run,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/spacemandev/.espressif/python_env/idf5.5_py3.13_env/lib/python3.13/site-packages/esp_idf_monitor/base/serial_handler.py", line 229, in handle_serial_input
+    self.check_panic_decode_trigger(line_strip)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "/Users/spacemandev/.espressif/python_env/idf5.5_py3.13_env/lib/python3.13/site-packages/esp_idf_monitor/base/serial_handler.py", line 304, in check_panic_decode_trigger
+    out = self.panic_handler.process_panic_output(self._panic_buffer)
+  File "/Users/spacemandev/.espressif/python_env/idf5.5_py3.13_env/lib/python3.13/site-packages/esp_idf_panic_decoder/panic_output_decoder.py", line 45, in process_panic_output
+    output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/subprocess.py", line 1972, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'riscv32-esp-elf-gdb'

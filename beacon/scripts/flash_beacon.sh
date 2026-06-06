@@ -46,6 +46,7 @@ Options:
   --wifi-pass <pass>
   --server-url <url>
   --api-key <key>
+  --allow-empty-api-key
   --landmark <text>
   -h, --help           show this help
 
@@ -65,6 +66,7 @@ while [[ $# -gt 0 ]]; do
         --wifi-pass)   SPIFFS_ARGS+=(--wifi-pass "$2"); shift 2 ;;
         --server-url)  SPIFFS_ARGS+=(--server-url "$2");shift 2 ;;
         --api-key)     SPIFFS_ARGS+=(--api-key "$2");   shift 2 ;;
+        --allow-empty-api-key) SPIFFS_ARGS+=(--allow-empty-api-key); shift ;;
         --landmark)    SPIFFS_ARGS+=(--landmark "$2");  shift 2 ;;
         -h|--help)     usage; exit 0 ;;
         -*)            echo "Unknown arg: $1" >&2; usage; exit 1 ;;

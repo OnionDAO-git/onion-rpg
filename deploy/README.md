@@ -71,11 +71,13 @@ RELINK=1 ./deploy/railway.sh   # re-pick workspace/project for this directory
 
 After selection it provisions a `Postgres` service, references it as
 `DATABASE_URL=${{Postgres.DATABASE_URL}}`, pushes every other key from `.env`,
-deploys via the `Dockerfile`, assigns a `*.up.railway.app` domain, and points
+runs the idempotent schema migration against Railway Postgres, deploys via the
+`Dockerfile`, assigns a `*.up.railway.app` domain, and points
 `ONION_CALLBACK_URL` at it. Nothing else needs clicking in the dashboard.
 
 Override names with env vars: `PROJECT_NAME` (used when creating a new project),
-`APP_SERVICE`, `PG_SERVICE`, `ENVIRONMENT`. Re-run anytime to push new vars or
+`APP_SERVICE`, `PG_SERVICE`, `ENVIRONMENT`. Set `RUN_DB_MIGRATIONS=false` to
+skip the explicit pre-deploy schema apply. Re-run anytime to push new vars or
 redeploy.
 
 ---

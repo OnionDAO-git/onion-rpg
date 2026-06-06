@@ -31,6 +31,8 @@
 #   APP_SERVICE    default: onion-rpg     app service name
 #   PG_SERVICE     default: Postgres      Postgres service name (Railway's default)
 #   ENVIRONMENT    default: production    Railway environment
+#   RUN_DB_MIGRATIONS
+#                 default: true           run `bun run db:init` with Railway vars before deploy
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,6 +43,7 @@ PROJECT_NAME="${PROJECT_NAME:-onion-rpg}"
 APP_SERVICE="${APP_SERVICE:-onion-rpg}"
 PG_SERVICE="${PG_SERVICE:-Postgres}"
 ENVIRONMENT="${ENVIRONMENT:-production}"
+RUN_DB_MIGRATIONS="${RUN_DB_MIGRATIONS:-true}"
 
 if ! command -v railway >/dev/null 2>&1; then
   echo "ERROR: Railway CLI not found. Install it: brew install railway   (or npm i -g @railway/cli)" >&2
@@ -103,9 +106,13 @@ else
 fi
 
 # Make sure the chosen environment is the active one for all commands below.
-railway environment "$ENVIRONMENT" >/dev/null 2>&1 \
-  && echo "  using environment: $ENVIRONMENT" \
-  || echo "  note: environment '$ENVIRONMENT' not found — using the linked default"
+RAILWAY_ENV_ARGS=()
+if railway environment "$ENVIRONMENT" >/dev/null 2>&1; then
+  RAILWAY_ENV_ARGS=(--environment "$ENVIRONMENT")
+  echo "  using environment: $ENVIRONMENT"
+else
+  echo "  note: environment '$ENVIRONMENT' not found — using the linked default"
+fi
 
 echo "==> Provisioning Postgres service ($PG_SERVICE)"
 # `add` is not strictly idempotent; ignore the error if it already exists.
@@ -116,8 +123,9 @@ railway add --service "$APP_SERVICE" >/dev/null 2>&1 && echo "  service created"
 
 echo "==> Pushing environment variables to $APP_SERVICE"
 # Wire DATABASE_URL to the Postgres service via Railway's reference syntax.
-railway variables --service "$APP_SERVICE" --set 'DATABASE_URL=${{'"$PG_SERVICE"'.DATABASE_URL}}' >/dev/null
-echo "  set DATABASE_URL -> \${{$PG_SERVICE.DATABASE_URL}}"
+db_ref="\${{$PG_SERVICE.DATABASE_URL}}"
+railway variables --service "$APP_SERVICE" --set "DATABASE_URL=$db_ref" >/dev/null
+echo "  set DATABASE_URL -> $db_ref"
 
 # Push every non-blank, non-comment key from .env EXCEPT DATABASE_URL and the
 # compose-only POSTGRES_* knobs (Railway's Postgres plugin owns those).
@@ -134,6 +142,17 @@ while IFS= read -r line; do
   railway variables --service "$APP_SERVICE" --set "$key=$val" >/dev/null
   echo "  set $key"
 done < "$ENV_FILE"
+
+if [ "$RUN_DB_MIGRATIONS" != "false" ]; then
+  echo "==> Running database migrations on Railway Postgres"
+  if ! command -v bun >/dev/null 2>&1; then
+    echo "ERROR: Bun is required to run migrations before deploy. Install it or set RUN_DB_MIGRATIONS=false." >&2
+    exit 1
+  fi
+  railway run --service "$APP_SERVICE" "${RAILWAY_ENV_ARGS[@]}" --no-local -- bun run db:init
+else
+  echo "==> Skipping database migrations (RUN_DB_MIGRATIONS=false)"
+fi
 
 echo "==> Deploying $APP_SERVICE"
 railway up --service "$APP_SERVICE" --ci

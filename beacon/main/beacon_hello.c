@@ -20,6 +20,8 @@ static const char *TAG = "beacon:hello";
 static TaskHandle_t s_hello_task = NULL;
 static volatile bool s_stop = false;
 
+#define BEACON_HELLO_TASK_STACK 8192
+
 /* ── Build the BEACON_HELLO JSON body ────────────────────────────────── */
 
 static void build_hello_json(char *buf, size_t buf_sz) {
@@ -80,9 +82,9 @@ static void hello_task(void *arg) {
     (void)arg;
     char hello_json[320];
 
-    uint32_t last_server_reg_ms = 0;
     /* Server registration fires every 30 s (6 x 5 s hello intervals). */
     const uint32_t SERVER_REG_INTERVAL_MS = 30000;
+    uint32_t last_server_reg_ms = 0U - SERVER_REG_INTERVAL_MS;
 
     while (!s_stop) {
         build_hello_json(hello_json, sizeof(hello_json));
@@ -125,7 +127,7 @@ static void hello_task(void *arg) {
 void beacon_hello_start(void) {
     s_stop = false;
     if (s_hello_task == NULL) {
-        xTaskCreate(hello_task, "beacon_hello", 4096, NULL, 3, &s_hello_task);
+        xTaskCreate(hello_task, "beacon_hello", BEACON_HELLO_TASK_STACK, NULL, 3, &s_hello_task);
         ESP_LOGI(TAG, "hello task started (interval %d ms)", BEACON_HELLO_INTERVAL_MS);
     }
 }

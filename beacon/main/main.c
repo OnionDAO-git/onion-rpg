@@ -73,8 +73,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         } else {
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
         }
-        /* Stop hello task; we can't relay without WiFi. */
-        beacon_hello_stop();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "WiFi connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
@@ -105,6 +103,7 @@ static bool wifi_connect(void) {
 
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
+    esp_wifi_set_ps(WIFI_PS_NONE);
     esp_wifi_start();
 
     ESP_LOGI(TAG, "Connecting to SSID: %s", g_cfg.wifi_ssid);
@@ -114,9 +113,8 @@ static bool wifi_connect(void) {
                                             pdFALSE, pdFALSE,
                                             pdMS_TO_TICKS(30000));
 
-    esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, inst_wifi);
-    esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, inst_ip);
-    vEventGroupDelete(s_wifi_event_group);
+    (void)inst_wifi;
+    (void)inst_ip;
 
     if (bits & WIFI_CONNECTED_BIT) return true;
     ESP_LOGE(TAG, "WiFi connect failed (SSID: %s)", g_cfg.wifi_ssid);

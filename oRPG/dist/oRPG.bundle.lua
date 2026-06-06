@@ -928,6 +928,15 @@ end
 function ui.divider(y)
     onion.display_line(4, y, ui.W - 4, y, { clear = false })
 end
+local function font_char_width(font)
+    if font == 'large' then return ui.FONT_LARGE_W end
+    if font == 'bold' then return ui.FONT_BOLD_W end
+    return ui.FONT_SMALL_W
+end
+local function max_chars_for_width(x, w, font)
+    local available = w or (ui.W - x - 6)
+    return math.max(1, math.floor(available / font_char_width(font)))
+end
 function ui.wrap_text(text, max_chars)
     max_chars = max_chars or 36
     local lines = {}
@@ -946,13 +955,27 @@ function ui.wrap_text(text, max_chars)
     if #lines == 0 then lines[1] = '' end
     return lines
 end
-function ui.body_text(lines, x, y, line_height, font)
+function ui.body_text(lines, x, y, line_height, font, w, max_lines)
     x           = x           or 6
     y           = y           or 30
     line_height = line_height or ui.LH_SMALL
     font        = font        or 'small'
-    onion.display_lines(lines, x, y, line_height, { font = font, clear = false })
-    return y + #lines * line_height
+    if type(lines) == 'string' then lines = { lines } end
+    local wrapped = {}
+    local max_chars = max_chars_for_width(x, w, font)
+    for _, line in ipairs(lines or {}) do
+        local parts = ui.wrap_text(tostring(line or ''), max_chars)
+        for _, part in ipairs(parts) do
+            wrapped[#wrapped + 1] = part
+        end
+    end
+    if #wrapped == 0 then wrapped[1] = '' end
+    local limit = max_lines or #wrapped
+    for i = 1, math.min(#wrapped, limit) do
+        onion.display_text(wrapped[i], x, y + (i - 1) * line_height,
+            { font = font, clear = false })
+    end
+    return y + math.min(#wrapped, limit) * line_height
 end
 function ui.hud(op)
     local act     = op and op.act      or 0
@@ -3953,6 +3976,106 @@ local proto  = require('lib.proto')
 local net    = require('lib.net')
 local ui     = require('lib.ui')
 local router = require('lib.router')
+local _raw_buttons = onion.buttons
+local BUTTON_ALIASES = {
+    up     = { 'up', 'UP', 'Up', 'u', 'U', 'arrow_up', 'ArrowUp', 'dpad_up', 'dpadUp', 'btn_up', 'button_up', 'nav_up' },
+    down   = { 'down', 'DOWN', 'Down', 'd', 'D', 'arrow_down', 'ArrowDown', 'dpad_down', 'dpadDown', 'btn_down', 'button_down', 'nav_down' },
+    left   = { 'left', 'LEFT', 'Left', 'l', 'L', 'arrow_left', 'ArrowLeft', 'dpad_left', 'dpadLeft', 'btn_left', 'button_left', 'nav_left' },
+    right  = { 'right', 'RIGHT', 'Right', 'r', 'R', 'arrow_right', 'ArrowRight', 'dpad_right', 'dpadRight', 'btn_right', 'button_right', 'nav_right' },
+    select = { 'select', 'SELECT', 'Select', 'sel', 'SEL', 'ok', 'OK', 'a', 'A', 'enter', 'Enter', 'start', 'center' },
+    cancel = { 'cancel', 'CANCEL', 'Cancel', 'back', 'BACK', 'b', 'B', 'esc', 'ESC', 'escape', 'Escape', 'menu' },
+}
+local DEFAULT_BUTTON_PINS = {
+    up = 41, down = 40, left = 42, right = 39, select = 15, cancel = 16,
+}
+local function is_pressed_value(v)
+    return v == true or v == 1 or v == '1' or v == 'true' or
+        v == 'TRUE' or v == 'pressed' or v == 'down'
+end
+local function read_named_button(raw, aliases)
+    if type(raw) ~= 'table' then return false end
+    for _, key in ipairs(aliases) do
+        if is_pressed_value(raw[key]) then return true end
+    end
+    return false
+end
+local function mark_pressed(out, value)
+    if type(value) ~= 'string' then return end
+    local lower = value:lower()
+    for name, aliases in pairs(BUTTON_ALIASES) do
+        for _, alias in ipairs(aliases) do
+            if lower == tostring(alias):lower() then
+                out[name] = true
+                return
+            end
+        end
+    end
+end
+local function merge_button_bucket(out, bucket)
+    if type(bucket) == 'string' then
+        mark_pressed(out, bucket)
+    elseif type(bucket) == 'table' then
+        for name, aliases in pairs(BUTTON_ALIASES) do
+            if read_named_button(bucket, aliases) then out[name] = true end
+        end
+        for _, value in ipairs(bucket) do
+            mark_pressed(out, value)
+        end
+    end
+end
+local function read_gpio_pin(pin)
+    if not pin then return nil end
+    local readers = { 'gpio_read', 'gpio_get', 'digital_read', 'pin_read', 'read_gpio' }
+    for _, reader_name in ipairs(readers) do
+        local reader = onion[reader_name]
+        if type(reader) == 'function' then
+            local ok, value = pcall(reader, pin)
+            if ok and value ~= nil then return value end
+        end
+    end
+    if type(onion.gpio) == 'function' then
+        local ok, value = pcall(onion.gpio, pin)
+        if ok and value ~= nil then return value end
+    end
+    return nil
+end
+local function read_gpio_button(name)
+    local pins = rawget(_G, 'ORPG_BUTTON_PINS') or DEFAULT_BUTTON_PINS
+    local value = read_gpio_pin(pins[name])
+    return value == false or value == 0 or value == '0' or value == 'LOW'
+end
+local function normalised_buttons()
+    local raw = {}
+    if type(_raw_buttons) == 'function' then
+        local ok, value = pcall(_raw_buttons)
+        if ok and value ~= nil then raw = value end
+    end
+    local out = {
+        up = false, down = false, left = false, right = false,
+        select = false, cancel = false,
+    }
+    if type(raw) == 'string' then
+        mark_pressed(out, raw)
+    elseif type(raw) == 'table' then
+        for name, aliases in pairs(BUTTON_ALIASES) do
+            out[name] = read_named_button(raw, aliases)
+        end
+        for _, value in ipairs(raw) do
+            mark_pressed(out, value)
+        end
+        merge_button_bucket(out, raw.pressed)
+        merge_button_bucket(out, raw.down)
+        merge_button_bucket(out, raw.held)
+        merge_button_bucket(out, raw.buttons)
+    end
+    for name in pairs(out) do
+        if not out[name] and read_gpio_button(name) then
+            out[name] = true
+        end
+    end
+    return out
+end
+onion.buttons = normalised_buttons
 local GAME_VERSION  = '0.1.0'
 local LOOP_SLEEP_MS = 80    -- main loop tick rate (matches firmware examples)
 local BEACON_TIMEOUT_MS = 30000  -- how long to wait for a beacon hello

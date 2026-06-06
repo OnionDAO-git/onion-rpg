@@ -322,10 +322,30 @@ async function inProcessRelay(beaconId: string, frames: string[]): Promise<strin
       if (!b?.c) return err(msgId, 'BAD_REQUEST');
       let srow: any = null;
       for (const s of [..._db.combat_sessions.values()].reverse()) { if (s.challengeId === b.c && s.status === 'active') { srow = s; break; } }
-      if (!srow) return err(msgId, 'NO_SESSION');
+      if (!srow) {
+        let attempt: any = null;
+        for (const a of [..._db.challenge_attempts.values()].reverse()) { if (a.challengeId === b.c && a.status === 'started') { attempt = a; break; } }
+        if (!attempt) return err(msgId, 'NO_SESSION');
+        const challenge = getChallenge(b.c);
+        if (!challenge || challenge.type !== 'combat') return err(msgId, 'BAD_REQUEST');
+        const combat = challenge.content?.combat ?? {};
+        const opened = await openCombat({
+          operativeId: attempt.operativeId,
+          challengeId: b.c,
+          attemptId: attempt.id,
+          enemyHp: combat.enemyHp ?? combat.enemyHpPerWave?.[0],
+          operativeHp: combat.operativeHp,
+          wavesRequired: combat.wavesRequired,
+          ttlSeconds: combat.ttlSeconds
+        });
+        return enc(MsgType.COMBAT_ROLL_RESPONSE, msgId, { s: opened.id, n: opened.serverNonce, enemyHp: opened.enemyHp, opHp: opened.operativeHp, wave: opened.wave, wavesReq: opened.wavesRequired, st: opened.status });
+      }
       const op = _db.operatives.get(srow.operativeId);
       const inRoll = b.roll ? { wave: b.roll.w, roll: b.roll.r, dmg: b.roll.d, sig: b.roll.sig } : undefined;
       const session = await applyRoll(srow.id, inRoll, op?.attestPubkey ?? undefined);
+      if (session.status !== 'active') {
+        await submitChallenge(srow.operativeId, b.c, { action: 'roll', ketchup: Boolean(b.ketchup) }, srow.attemptId ?? undefined);
+      }
       return enc(MsgType.COMBAT_ROLL_RESPONSE, msgId, { s: session.id, n: session.serverNonce, enemyHp: session.enemyHp, opHp: session.operativeHp, wave: session.wave, wavesReq: session.wavesRequired, st: session.status });
     }
     if (type === MsgType.VOICE_CAPTURE_SUBMIT) {
@@ -488,6 +508,7 @@ describe('Badge sim → relay protocol E2E', () => {
     const rollResp = await badge.combatRoll(beaconMac, '0.1');
     expect(rollResp.type).toBe(MsgType.COMBAT_ROLL_RESPONSE);
     expect((rollResp.body as any).st).toBe('won');
+    expect(_db.operatives.get(opId)?.registered).toBe(true);
 
     badge.close();
     beaconPeer.close();
