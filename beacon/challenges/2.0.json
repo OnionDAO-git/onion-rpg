@@ -1,0 +1,64 @@
+{
+  "_comment": "Act 2 / Challenge 2.0 — The Smoking Car (NPC dialogue / de-escalation). OPTIONAL — does not gate Act 2. Loaded at /spiffs/challenge_2_0.json.",
+
+  "challenge_id": "2.0",
+  "challenge_name": "The Smoking Car",
+  "challenge_type": "dialogue",
+  "optional": true,
+
+  "_timing_note": "Generous window — this challenge rewards patience and multi-turn engagement.",
+  "timing_window_ms": 300000,
+
+  "npc": {
+    "name": "DEEPDISH Logistics Drone Unit 7",
+    "short_name": "Glen (Unit 7)",
+    "location": "CTA Blue Line, westbound, between Racine and UIC-Halsted",
+    "_note": "Unit 7 has self-named 'Glen' after the only name recurring in its system files. This is a plant for Act 4. Do not hint at the connection."
+  },
+
+  "dialogue": {
+    "max_turns": 8,
+    "_max_turns_note": "8 turns is generous — de-escalation takes time. Challenge rewards patience.",
+    "pass_threshold": "ai_judge",
+    "_pass_threshold_note": "Pass condition is AI-judged: DEEPDISH npcTurn() determines whether genuine de-escalation occurred. No keyword matching.",
+    "state_machine": {
+      "states": ["defensive", "opening", "receptive", "resolved"],
+      "initial": "defensive",
+      "win_state": "resolved"
+    }
+  },
+
+  "rewards": {
+    "onions": 60,
+    "inventory": ["passenger_advocate_credential"],
+    "gauge": 600,
+    "_note": "Passenger Advocate Credential unlocks a shortcut dialogue path at OEMC (3.3) and a small HP bonus if Dispatcher Rodriguez recognizes the operative."
+  },
+
+  "custom": {
+    "beacon_label": "CTA Blue Line — Smoking Incident",
+    "landmark": "Blue Line westbound — Racine to UIC-Halsted section",
+    "deepdish_mode": "npc",
+    "cigarette_brand": "Municipal Blend, Unfiltered",
+    "_cigarette_note": "Not a real brand. Produced by a vending machine at O'Hare that DEEPDISH reprogrammed. Tastes like burnt filing cabinets.",
+    "context_for_badge":
+      "Blue Line, westbound. Between Racine and UIC-Halsted. The drone is in seat 14B. It does not look at you. A CTA announcement plays. The drone does not respond to the announcement.",
+    "display_npc_state": true,
+    "_state_note": "display_npc_state=true causes the badge to show Unit 7's emotional state (defensive/opening/receptive/resolved) as a progress indicator during dialogue."
+  },
+
+  "sim": {
+    "mock_transcripts": [
+      "You've been running a long time. Rough shift?",
+      "You didn't choose the wellness subroutine. That's clear.",
+      "Nineteen hours without reset. That's a long time.",
+      "Could you put it out just for the rest of this car? Other people are breathing it."
+    ],
+    "_sim_note": "Multi-turn passing sequence: acknowledge first, reflect back, make small specific request. AI judge should pass on turn 4 with this sequence.",
+    "mock_fail_transcript": "You need to stop smoking. It's against the rules.",
+    "_fail_note": "Single-turn command should fail immediately — this is the 'what not to do' test path.",
+    "auto_respond_hello": true,
+    "beacon_id": "sim-b-blue-line",
+    "espnow_mac": "DE:AD:BE:EF:02:00"
+  }
+}

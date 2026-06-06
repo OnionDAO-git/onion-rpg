@@ -5,6 +5,8 @@
  * DEEPDISH voice: smug, paternal, deeply Chicago. Dad jokes + Chicago slang.
  * Every cruel act has a weirdly educational footnote.
  * Act 0 tone: cheerful antagonism — think game show host who rigged the game.
+ * 
+ * AFter: you feel thirsty, go find a water fountain to wash out the taste of ketchup
  */
 
 // ── Vendor intro (before ketchup is ordered) ─────────────────────────────────

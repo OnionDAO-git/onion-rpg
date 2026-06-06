@@ -415,6 +415,11 @@ describe('Act 0 — Ketchup Gauntlet (registration + combat)', () => {
     expect(await canBegin(op.id, '0.1')).toBe(true);
   });
 
+  it('canBegin=false for a challenge in a future act', async () => {
+    const op = await resolveOperative('hw-future-act');
+    expect(await canBegin(op.id, '1.1')).toBe(false);
+  });
+
   it('beginChallenge 0.1 returns attemptId + content with intro text', async () => {
     const op = await resolveOperative('hw-begin2');
     const { attemptId, content } = await beginChallenge(op.id, '0.1');
@@ -442,6 +447,10 @@ describe('Act 0 — Ketchup Gauntlet (registration + combat)', () => {
     expect(_db.operatives.get(op.id)?.registered).toBe(true);
     // Gauge bumped ≥ 500
     expect(_db.gauge.current).toBeGreaterThanOrEqual(500);
+
+    const gaugeAfterFirstClear = _db.gauge.current;
+    await submitChallenge(op.id, '0.1', { action: 'roll' }, attemptId);
+    expect(_db.gauge.current).toBe(gaugeAfterFirstClear);
   });
 
   it('combat lost (op hp→0) returns passed=false', async () => {
@@ -520,6 +529,7 @@ describe('Act 1.1 — Malört Fountains (voice/STT)', () => {
 
   it('passes with correct treatment-sequence transcript', async () => {
     const op = await resolveOperative('hw-voice-pass');
+    _db.game_state.get(op.id)!.currentAct = 1;
     _db.operatives.get(op.id)!.username = 'test-voice-player';
     const { attemptId } = await beginChallenge(op.id, '1.1');
     const result = await submitChallenge(op.id, '1.1', { t: 'intake crib tunnel jardine grid' }, attemptId);
@@ -530,6 +540,7 @@ describe('Act 1.1 — Malört Fountains (voice/STT)', () => {
 
   it('fails with completely wrong transcript', async () => {
     const op = await resolveOperative('hw-voice-fail');
+    _db.game_state.get(op.id)!.currentAct = 1;
     const { attemptId } = await beginChallenge(op.id, '1.1');
     const result = await submitChallenge(op.id, '1.1', { t: 'pizza donuts hot chocolate nachos' }, attemptId);
     expect(result.passed).toBe(false);
@@ -540,6 +551,7 @@ describe('Act 1.1 — Malört Fountains (voice/STT)', () => {
     process.env['STT_MOCK_TRANSCRIPT'] = 'intake crib tunnel jardine grid';
     _blobStore.set('ref-audio-001', new Uint8Array([0x01, 0x02]));
     const op = await resolveOperative('hw-voice-blob');
+    _db.game_state.get(op.id)!.currentAct = 1;
     const { attemptId } = await beginChallenge(op.id, '1.1');
     const result = await submitChallenge(op.id, '1.1', { ref: 'ref-audio-001' }, attemptId);
     expect(result.passed).toBe(true);
@@ -554,6 +566,7 @@ describe('Act 1.1 — Malört Fountains (voice/STT)', () => {
     await badge.waitForBeacon('1.1', 1000);
     const ack = await badge.identify(beaconMac);
     const opId = (ack.body as any).id as string;
+    _db.game_state.get(opId)!.currentAct = 1;
     // Give username so onion reward path fires
     _db.operatives.get(opId)!.username = 'test-voice-relay-player';
     await badge.beginChallenge(beaconMac, '1.1');
@@ -585,17 +598,20 @@ describe('Act 1.3 — River Ran Backwards (NPC/AI)', () => {
 
   it('canBegin=false without water_main_key', async () => {
     const op = await resolveOperative('hw-npc-nokey');
+    _db.game_state.get(op.id)!.currentAct = 1;
     expect(await canBegin(op.id, '1.3')).toBe(false);
   });
 
   it('canBegin=true after granting water_main_key', async () => {
     const op = await resolveOperative('hw-npc-key');
+    _db.game_state.get(op.id)!.currentAct = 1;
     await grantItem(op.id, 'water_main_key');
     expect(await canBegin(op.id, '1.3')).toBe(true);
   });
 
   it('passes when mocked Claude returns passed=true', async () => {
     const op = await resolveOperative('hw-npc-pass');
+    _db.game_state.get(op.id)!.currentAct = 1;
     _db.operatives.get(op.id)!.username = 'test-npc-player';
     await grantItem(op.id, 'water_main_key');
     queueNpcResponse({ passed: true, reply: 'Correct, champ! Sewage → Lake Michigan.', reasoning: 'correct' });
@@ -608,6 +624,7 @@ describe('Act 1.3 — River Ran Backwards (NPC/AI)', () => {
 
   it('continues when mocked Claude returns passed=false', async () => {
     const op = await resolveOperative('hw-npc-fail');
+    _db.game_state.get(op.id)!.currentAct = 1;
     await grantItem(op.id, 'water_main_key');
     queueNpcResponse({ passed: false, reply: "That's a no, pal.", reasoning: 'wrong' });
     const { attemptId } = await beginChallenge(op.id, '1.3');
@@ -619,6 +636,7 @@ describe('Act 1.3 — River Ran Backwards (NPC/AI)', () => {
 
   it('returns greeting/continued when utterance is empty', async () => {
     const op = await resolveOperative('hw-npc-empty');
+    _db.game_state.get(op.id)!.currentAct = 1;
     await grantItem(op.id, 'water_main_key');
     const { attemptId } = await beginChallenge(op.id, '1.3');
     const result = await submitChallenge(op.id, '1.3', { t: '' }, attemptId);
@@ -635,6 +653,7 @@ describe('Act 1.3 — River Ran Backwards (NPC/AI)', () => {
     await badge.waitForBeacon('1.3', 1000);
     const ack = await badge.identify(beaconMac);
     const opId = (ack.body as any).id as string;
+    _db.game_state.get(opId)!.currentAct = 1;
     // Grant key directly (simulating prior 1.1 completion)
     await grantItem(opId, 'water_main_key');
     await badge.beginChallenge(beaconMac, '1.3');
@@ -668,17 +687,20 @@ describe('Act 4 progression gating', () => {
 
   it('canBegin=false with no credentials', async () => {
     const op = await resolveOperative('hw-a4-none');
+    _db.game_state.get(op.id)!.currentAct = 4;
     expect(await canBegin(op.id, '4.1')).toBe(false);
   });
 
   it('canBegin=false with 1 of 3 credentials', async () => {
     const op = await resolveOperative('hw-a4-1of3');
+    _db.game_state.get(op.id)!.currentAct = 4;
     await grantItem(op.id, 'grid_credential');
     expect(await canBegin(op.id, '4.1')).toBe(false);
   });
 
   it('canBegin=false with 2 of 3 credentials', async () => {
     const op = await resolveOperative('hw-a4-2of3');
+    _db.game_state.get(op.id)!.currentAct = 4;
     await grantItem(op.id, 'grid_credential');
     await grantItem(op.id, 'dispatch_credential');
     expect(await canBegin(op.id, '4.1')).toBe(false);
@@ -686,6 +708,7 @@ describe('Act 4 progression gating', () => {
 
   it('canBegin=true with all 3 credentials', async () => {
     const op = await resolveOperative('hw-a4-3of3');
+    _db.game_state.get(op.id)!.currentAct = 4;
     await grantItem(op.id, 'grid_credential');
     await grantItem(op.id, 'dispatch_credential');
     await grantItem(op.id, 'city_it_keycard');
@@ -694,6 +717,7 @@ describe('Act 4 progression gating', () => {
 
   it('beginChallenge throws GATED error without credentials', async () => {
     const op = await resolveOperative('hw-a4-gated');
+    _db.game_state.get(op.id)!.currentAct = 4;
     await expect(beginChallenge(op.id, '4.1')).rejects.toThrow(/requires/i);
   });
 
@@ -707,6 +731,7 @@ describe('Act 4 progression gating', () => {
 
   it('full Act 4 combat: begin + open + roll → win → prompt_console_access + 200 Onions', async () => {
     const op = await resolveOperative('hw-a4-full');
+    _db.game_state.get(op.id)!.currentAct = 4;
     _db.operatives.get(op.id)!.username = 'test-act4-player';
     await grantItem(op.id, 'grid_credential');
     await grantItem(op.id, 'dispatch_credential');

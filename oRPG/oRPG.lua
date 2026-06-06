@@ -220,6 +220,20 @@ local function draw_hud()
     -- Beacon search hint
     onion.display_text('Searching for beacon...', 6, 86, { font = 'small', clear = false })
 
+    -- Latest field hint issued from the admin operative panel.
+    local admin_hints = operative.flags and operative.flags.adminHints
+    if type(admin_hints) == 'table' and #admin_hints > 0 then
+        local hint = admin_hints[#admin_hints]
+        if type(hint) == 'table' and type(hint.text) == 'string' then
+            onion.display_text('OPS HINT:', 6, 102, { font = 'bold', clear = false })
+            local hint_lines = ui.wrap_text(hint.text, 38)
+            for i = 1, math.min(3, #hint_lines) do
+                onion.display_text(hint_lines[i], 6, 114 + ((i - 1) * 10),
+                    { font = 'small', clear = false })
+            end
+        end
+    end
+
     ui.divider(ui.H - 18)
     onion.display_text('[CANCEL] exit oRPG', 6, ui.H - 14,
         { font = 'small', clear = false })

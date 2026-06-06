@@ -410,6 +410,7 @@ function archetypes.npc(challenge_id, opts)
     local state = {
         phase        = 'intro',      -- intro | choosing | waiting | reply | done
         session_id   = nil,
+        hardware_id  = nil,
         npc_text     = opts.greeting or 'Hello, Operative.',
         selected     = 1,
         last_buttons = nil,
@@ -420,6 +421,7 @@ function archetypes.npc(challenge_id, opts)
         state.phase = 'waiting'
         local body  = {
             c = challenge_id,
+            h = state.hardware_id,
             s = state.session_id,
             t = utterance,
         }
@@ -441,6 +443,7 @@ function archetypes.npc(challenge_id, opts)
 
     return {
         begin = function(ctx)
+            state.hardware_id = ctx.hardware_id
             net.request(MT.CHALLENGE_BEGIN, { c = challenge_id, h = ctx.hardware_id })
         end,
 

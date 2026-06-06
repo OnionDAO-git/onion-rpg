@@ -1,7 +1,7 @@
 <script lang="ts">
 	/**
 	 * StatusBadge — a small coloured pill for status strings
-	 * (online/offline, pending/settled, won/lost, etc.).
+	 * (online/offline, pending/completed, won/lost, etc.).
 	 */
 	interface Props {
 		status: string;
@@ -17,9 +17,12 @@
 		true: 'green',
 		registered: 'green',
 		settled: 'green',
+		completed: 'green',
 		won: 'green',
 		active: 'yellow',
 		pending: 'yellow',
+		processing: 'yellow',
+		awaiting_badge_signature: 'yellow',
 		started: 'yellow',
 		continued: 'yellow',
 		offline: 'red',
@@ -28,6 +31,7 @@
 		expired: 'red',
 		failed: 'red',
 		cancelled: 'red',
+		denied: 'red',
 		npc: 'blue',
 		dialogue: 'blue',
 		combat: 'red',

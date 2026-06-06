@@ -191,6 +191,8 @@ export interface ChallengeContext {
 	operative: Operative;
 	/** catalogIds the operative currently holds (items+creds+fragments). */
 	inventory: string[];
+	/** Persisted per-operative challenge/story flags. */
+	flags: Record<string, unknown>;
 	/** Bumps/looks up the active combat session for combat challenges. */
 	combat?: CombatSession;
 	/** Engine-provided side effects; see engine/index.ts. */

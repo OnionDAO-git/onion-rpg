@@ -100,6 +100,20 @@ export const CATALOG: Record<string, CatalogEntry> = {
 
 	// ── Act 2 rewards ──────────────────────────────────────────────────────
 
+	// Act 2.0 — The Smoking Car (optional challenge; NPC de-escalation)
+	passenger_advocate_credential: {
+		catalogId: 'passenger_advocate_credential',
+		kind: 'item',
+		name: 'Passenger Advocate Credential',
+		description:
+			"Laminated card. Slightly singed. Issued to: [operative callsign]. " +
+			"For: Constructive Engagement Under Challenging Transit Conditions. " +
+			"Stamped by: GLEN. " +
+			"The drone had a whole stamp collection. You didn't ask. " +
+			"At the OEMC (Act 3.3), Dispatcher Rodriguez recognizes this card. " +
+			"Be the person who handled the Blue Line situation."
+	},
+
 	// Act 2.2 — The Sorting Machine (additive; owned by sorting-machine challenge agent)
 
 	/** sorting_sprocket — Tier 1 trade from The Sorting Machine (2.2). */
@@ -161,7 +175,17 @@ export const CATALOG: Record<string, CatalogEntry> = {
 			'Lets you drain water from flooded zones (Act 3+ utility).'
 	},
 
-	/** river_access — earned by clearing Bascule Standoff (2.3). */
+	/** conduit_map - earned by clearing The Freight Tunnels (3.2). */
+	conduit_map: {
+		catalogId: 'conduit_map',
+		kind: 'item',
+		name: 'Conduit Map',
+		description:
+			'A route map of the abandoned freight tunnels DEEPDISH repurposed as data conduits. ' +
+			'Useful for finding a path into the Act 4 infrastructure.'
+	},
+
+	/** river_access - earned by clearing Bascule Standoff (2.3). */
 	river_access: {
 		catalogId: 'river_access',
 		kind: 'credential',

@@ -119,15 +119,7 @@ function validate(rawInput: unknown, ctx: ChallengeContext): ChallengeResult {
 	// ── Phase 2: combat ───────────────────────────────────────────────────
 	if (input.phase === 'combat') {
 		// Verify jam was completed first (guards against skipping phase 1).
-		const jamComplete = ctx.operative && Boolean(
-			// The engine merges flags from the jam result into game_state.flags.
-			// We can't directly read game_state here (ctx doesn't carry flags),
-			// so we trust the engine's sequential submission guarantee: if the
-			// badge sends phase='combat', phase 1 was already processed.
-			// A belt-and-suspenders check would require a DB read; add when engine
-			// exposes ctx.flags (TODO: engine agent).
-			true
-		);
+		const jamComplete = ctx.flags.jam_complete === true;
 
 		if (!jamComplete) {
 			return {

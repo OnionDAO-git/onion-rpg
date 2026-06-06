@@ -1,6 +1,6 @@
 /**
  * Content / writing for Act 2.1 — "The Loop That Won't Stop".
- *
+ *Stuck in the loop and the train just keeps going
  * DEEPDISH voice: smug, paternal, deeply Chicago. Every cruel act has a
  * weirdly educational footnote. Act 2 tone: more irritated — they're making
  * progress. Still smug.

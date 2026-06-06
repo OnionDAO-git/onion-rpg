@@ -71,8 +71,8 @@ export async function adminListOperatives(): Promise<AdminOperative[]> {
     SELECT
       o.id, o.hardware_id, o.onion_id, o.username, o.callsign,
       o.registered, o.created_at, o.last_seen_at,
-      COALESCE(g.current_act, 0)   AS act,
-      COALESCE(g.hp, 100)  AS hp
+      COALESCE(g.current_act, 0)  AS act,
+      COALESCE(g.hp, 100)         AS hp
     FROM operatives o
     LEFT JOIN game_state g ON g.operative_id = o.id
     ORDER BY o.last_seen_at DESC
@@ -113,12 +113,29 @@ export async function adminGetOperativeAttempts(
 	operativeId: string
 ): Promise<AdminChallengeAttempt[]> {
 	return sql<AdminChallengeAttempt[]>`
-    SELECT id, challenge_id, status, result, created_at, resolved_at
+    SELECT id, challenge_id, status, result, started_at AS created_at, resolved_at
     FROM challenge_attempts
     WHERE operative_id = ${operativeId}
-    ORDER BY created_at DESC
+    ORDER BY started_at DESC
     LIMIT 50
-  `;
+	`;
+}
+
+export interface AdminOperativeState {
+	currentAct: number;
+	challengeStatus: Record<string, string>;
+	flags: Record<string, unknown>;
+}
+
+export async function adminGetOperativeState(
+	operativeId: string
+): Promise<AdminOperativeState | null> {
+	const [row] = await sql<AdminOperativeState[]>`
+		SELECT current_act, challenge_status, flags
+		FROM game_state
+		WHERE operative_id = ${operativeId}
+	`;
+	return row ?? null;
 }
 
 // ── Storyteller Sessions ──────────────────────────────────────────────────────
@@ -181,7 +198,7 @@ export interface AdminRewardRow {
 	status: string;
 	onionRequestId: string | null;
 	createdAt: string;
-	settledAt: string | null;
+	updatedAt: string | null;
 }
 
 export async function adminListRewards(opts?: {
@@ -193,8 +210,8 @@ export async function adminListRewards(opts?: {
 		return sql<AdminRewardRow[]>`
       SELECT
         r.id, r.operative_id, o.username,
-        r.external_id, r.type, r.amount, r.status,
-        r.onion_request_id, r.created_at, r.settled_at
+        r.external_id, r.request_type AS type, r.amount, r.status,
+        r.onion_request_id, r.created_at, r.updated_at
       FROM onion_rewards r
       LEFT JOIN operatives o ON o.id = r.operative_id
       WHERE r.status = ${opts.status}
@@ -205,8 +222,8 @@ export async function adminListRewards(opts?: {
 	return sql<AdminRewardRow[]>`
     SELECT
       r.id, r.operative_id, o.username,
-      r.external_id, r.type, r.amount, r.status,
-      r.onion_request_id, r.created_at, r.settled_at
+      r.external_id, r.request_type AS type, r.amount, r.status,
+      r.onion_request_id, r.created_at, r.updated_at
     FROM onion_rewards r
     LEFT JOIN operatives o ON o.id = r.operative_id
     ORDER BY r.created_at DESC
@@ -241,8 +258,10 @@ export async function adminDashboardStats(): Promise<AdminDashboardStats> {
     `,
 		sql<{ pending: number; totalAwarded: number }[]>`
       SELECT
-        COUNT(*) FILTER (WHERE status = 'pending')          AS pending,
-        COALESCE(SUM(amount) FILTER (WHERE status = 'settled'), 0)  AS total_awarded
+        COUNT(*) FILTER (
+          WHERE status IN ('pending', 'processing', 'awaiting_badge_signature')
+        ) AS pending,
+        COALESCE(SUM(amount) FILTER (WHERE status = 'completed'), 0) AS total_awarded
       FROM onion_rewards
     `
 	]);

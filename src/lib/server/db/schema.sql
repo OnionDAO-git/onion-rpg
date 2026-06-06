@@ -217,3 +217,57 @@ CREATE TABLE IF NOT EXISTS storyteller_transcripts (
 );
 CREATE INDEX IF NOT EXISTS storyteller_transcripts_session_idx
 	ON storyteller_transcripts (session_id, turn);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- kanban_developers: project team members who can claim work items.
+-- ─────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS kanban_developers (
+	id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+	name     TEXT NOT NULL UNIQUE,
+	initials TEXT NOT NULL,
+	color    TEXT NOT NULL DEFAULT '#8ecf5e'
+);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- kanban_items: project-tracking cards. Seeded with all 13 challenges,
+-- story elements, and infrastructure items; mutable via the admin UI.
+-- ─────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS kanban_items (
+	id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+	title            TEXT NOT NULL,
+	description      TEXT NOT NULL DEFAULT '',
+	-- 'challenge' | 'story' | 'infrastructure'
+	category         TEXT NOT NULL,
+	-- For challenge items only:
+	challenge_id     TEXT,
+	act              INTEGER,
+	challenge_type   TEXT,   -- 'combat' | 'dialogue' | 'merchant' | 'npc'
+	beacon_id_hint   TEXT,
+	lua_script_path  TEXT,   -- relative path within repo, e.g. oRPG/screens/0_1.lua
+	-- Kanban state:
+	-- 'backlog' | 'in_progress' | 'review' | 'done'
+	status           TEXT NOT NULL DEFAULT 'backlog',
+	-- 'low' | 'medium' | 'high' | 'critical'
+	priority         TEXT NOT NULL DEFAULT 'medium',
+	assignee_id      UUID REFERENCES kanban_developers(id) ON DELETE SET NULL,
+	commitment       TEXT,
+	due_date         DATE,
+	created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+	updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS kanban_items_cat_idx ON kanban_items (category, status);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- kanban_comments: threaded comments on kanban items.
+-- ─────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS kanban_comments (
+	id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+	item_id    UUID NOT NULL REFERENCES kanban_items(id) ON DELETE CASCADE,
+	dev_id     UUID REFERENCES kanban_developers(id) ON DELETE SET NULL,
+	dev_name   TEXT NOT NULL DEFAULT '',
+	dev_initials TEXT NOT NULL DEFAULT '?',
+	dev_color  TEXT NOT NULL DEFAULT '#4a4a60',
+	body       TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS kanban_comments_item_idx ON kanban_comments (item_id, created_at);

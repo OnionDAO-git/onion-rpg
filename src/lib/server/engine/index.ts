@@ -113,10 +113,12 @@ export async function buildContext(
 
 	const inventory = await listCatalogIds(operativeId);
 	const combat = (await findSession(operativeId, challengeId)) ?? undefined;
+	const state = await getGameState(operativeId);
 
 	return {
 		operative: op,
 		inventory,
+		flags: state?.flags ?? {},
 		combat,
 		now: Date.now()
 	};
@@ -125,12 +127,14 @@ export async function buildContext(
 // ── Gating ────────────────────────────────────────────────────────────────
 
 /**
- * Check `requires` credential gating before a challenge may begin. Returns
- * false for unknown challenge ids.
+ * Check story-act and `requires` credential gating before a challenge may
+ * begin. Earlier acts remain replayable; future acts stay locked.
  */
 export async function canBegin(operativeId: string, challengeId: string): Promise<boolean> {
 	const challenge = getChallenge(challengeId);
 	if (!challenge) return false;
+	const state = await getGameState(operativeId);
+	if (!state || challenge.act > state.currentAct) return false;
 	if (challenge.requires.length === 0) return true;
 	return hasAll(operativeId, challenge.requires);
 }
@@ -138,8 +142,9 @@ export async function canBegin(operativeId: string, challengeId: string): Promis
 // ── Reward application ─────────────────────────────────────────────────────
 
 /**
- * Apply a list of RewardSpec entries for a completed challenge. Idempotent per
- * externalId; safe to call multiple times (e.g. on retry).
+ * Apply a list of RewardSpec entries for a completed challenge. The caller
+ * must ensure inventory and gauge rewards are issued once per clear; Onion
+ * requests are independently idempotent per externalId.
  *
  * - inventory → grantItem()
  * - gauge     → bumpGauge()
@@ -325,10 +330,16 @@ export async function submitChallenge(
 	}
 
 	if (result.passed) {
+		const state = await getGameState(operativeId);
+		const alreadyCleared = state?.challengeStatus[challengeId] === 'cleared';
+
 		// Apply the challenge's declared rewards (plus any per-result overrides).
-		const rewards = result.rewards ?? challenge.rewards;
-		const aid = attemptId ?? 'noattempt';
-		await applyRewards(operativeId, challengeId, aid, rewards);
+		// Replays remain valid, but rewards are only issued on the first clear.
+		if (!alreadyCleared) {
+			const rewards = result.rewards ?? challenge.rewards;
+			const aid = attemptId ?? 'noattempt';
+			await applyRewards(operativeId, challengeId, aid, rewards);
+		}
 
 		// Merge any result flags into game_state.flags.
 		if (result.flags && Object.keys(result.flags).length > 0) {
@@ -371,7 +382,7 @@ async function mergeFlags(
  * Advance current_act if every challenge in `act` is now cleared.
  */
 async function maybeAdvanceAct(operativeId: string, act: number): Promise<void> {
-	const actChallenges = challengesForAct(act);
+	const actChallenges = challengesForAct(act).filter((challenge) => challenge.content?.optional !== true);
 	if (actChallenges.length === 0) return;
 
 	const [gs] = await sql<{ currentAct: number; challengeStatus: Record<string, string> }[]>`

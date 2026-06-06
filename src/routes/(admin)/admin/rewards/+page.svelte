@@ -1,7 +1,7 @@
 <script lang="ts">
 	/**
 	 * Reward Audit — the Onion DAO request ledger.
-	 * Shows every onion reward request with its status (pending/settled/failed),
+	 * Shows every onion reward request with its Onion DAO status,
 	 * amount, operative, and Onion DAO request ID for cross-referencing.
 	 *
 	 * Filter by status via query param or the quick-filter buttons.
@@ -42,9 +42,23 @@
 		} catch { return String(v); }
 	}
 
-	const STATUS_FILTERS = ['', 'pending', 'settled', 'failed', 'cancelled'] as const;
+	const STATUS_FILTERS = [
+		'',
+		'pending',
+		'processing',
+		'awaiting_badge_signature',
+		'completed',
+		'denied',
+		'failed'
+	] as const;
 	const STATUS_LABELS: Record<string, string> = {
-		'': 'All', pending: 'Pending', settled: 'Settled', failed: 'Failed', cancelled: 'Cancelled'
+		'': 'All',
+		pending: 'Pending',
+		processing: 'Processing',
+		awaiting_badge_signature: 'Awaiting Badge',
+		completed: 'Completed',
+		denied: 'Denied',
+		failed: 'Failed'
 	};
 
 	function setFilter(s: string) {
@@ -63,7 +77,7 @@
 		{ key: 'externalId',     label: 'External ID',  format: (v) => String(v).slice(0, 16) + '…' },
 		{ key: 'onionRequestId', label: 'DAO Req ID',   format: (v) => v ? String(v).slice(0, 12) + '…' : '—' },
 		{ key: 'createdAt',      label: 'Created',      format: fmtDate },
-		{ key: 'settledAt',      label: 'Settled',      format: fmtDate },
+		{ key: 'updatedAt',      label: 'Updated',      format: fmtDate },
 	];
 
 	// Selected row for quick-copy detail
@@ -117,7 +131,7 @@
 				<dt>External ID</dt>   <dd><code>{selected.externalId}</code></dd>
 				<dt>DAO Request ID</dt><dd><code>{selected.onionRequestId ?? '—'}</code></dd>
 				<dt>Created</dt>       <dd>{fmtDate(selected.createdAt)}</dd>
-				<dt>Settled</dt>       <dd>{fmtDate(selected.settledAt)}</dd>
+				<dt>Updated</dt>       <dd>{fmtDate(selected.updatedAt)}</dd>
 			</dl>
 		</div>
 	{/if}

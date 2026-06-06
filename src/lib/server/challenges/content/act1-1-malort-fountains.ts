@@ -8,6 +8,9 @@
  * ALL prose here must stay in DEEPDISH voice (smug, paternal, deeply Chicago;
  * every cruel act has an educational footnote). Keep badge display in mind:
  * lines should fit ~38 chars wide, 4–6 lines max per screen.
+ * 
+ * Make a pipe game to connect the pipes for the challenge
+ * 
  */
 
 // ── NPC identity ──────────────────────────────────────────────────────────

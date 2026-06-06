@@ -10,8 +10,10 @@
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import type { AdminOperative } from '$lib/server/admin/queries';
 
-	let { data } = $props();
-	let { operatives, selectedId, detail } = $derived(data);
+	let { data, form } = $props();
+	let adminData = $derived(data as any);
+	let actionResult = $derived(form as any);
+	let { operatives, selectedId, detail, catalog, challenges } = $derived(adminData);
 
 	// Filter by act from query param
 	let actFilter = $state(page.url.searchParams.get('act') ?? '');
@@ -59,6 +61,12 @@
 	let selectedOp = $derived(
 		selectedId ? operatives.find((o: AdminOperative) => o.id === selectedId) ?? null : null
 	);
+	let adminHints = $derived(
+		Array.isArray(detail?.state?.flags?.adminHints) ? detail.state.flags.adminHints : []
+	);
+	let challengeStatuses = $derived(
+		detail?.state?.challengeStatus ?? {}
+	);
 
 	// Inventory kind colours
 	function kindAccent(kind: string): string {
@@ -76,6 +84,11 @@
 	<header class="page-header">
 		<h1 class="page-title">Operative Roster</h1>
 		<p class="page-sub">{filtered.length} operative{filtered.length !== 1 ? 's' : ''} shown</p>
+		{#if actionResult?.success}
+			<p class="action-message success">Admin action applied.</p>
+		{:else if actionResult?.message}
+			<p class="action-message error">{actionResult.message}</p>
+		{/if}
 	</header>
 
 	<!-- Act filter -->
@@ -112,6 +125,78 @@
 				<span>Last seen <strong>{fmtDate(selectedOp.lastSeenAt)}</strong></span>
 				<span class="hw-id"><code>{selectedOp.hardwareId}</code></span>
 			</div>
+
+			<section class="interventions">
+				<h3 class="detail-section-title">Admin Intervention</h3>
+				<p class="intervention-note">Operator actions take effect immediately and bypasses are recorded in challenge attempts.</p>
+
+				<div class="tool-grid">
+					<form method="POST" action="?/createHint&id={selectedOp.id}" class="tool-card">
+						<input type="hidden" name="operativeId" value={selectedOp.id} />
+						<strong>Create Field Hint</strong>
+						<select name="challengeId" aria-label="Hint challenge">
+							<option value="">General story hint</option>
+							{#each challenges as challenge (challenge.id)}
+								<option value={challenge.id}>{challenge.id} · {challenge.name}</option>
+							{/each}
+						</select>
+						<textarea name="text" required maxlength="500" placeholder="What should this player see next?"></textarea>
+						<button type="submit">Send hint</button>
+					</form>
+
+					<form method="POST" action="?/grantItem&id={selectedOp.id}" class="tool-card">
+						<input type="hidden" name="operativeId" value={selectedOp.id} />
+						<strong>Award Item</strong>
+						<select name="catalogId" required aria-label="Catalog item">
+							{#each catalog as item (item.id)}
+								<option value={item.id}>{item.name} · {item.kind.replace('_', ' ')}</option>
+							{/each}
+						</select>
+						<label>Quantity <input name="qty" type="number" min="1" max="99" value="1" /></label>
+						<button type="submit">Grant item</button>
+					</form>
+
+					<form method="POST" action="?/setAct&id={selectedOp.id}" class="tool-card">
+						<input type="hidden" name="operativeId" value={selectedOp.id} />
+						<strong>Move Story Act</strong>
+						<select name="act" aria-label="Current act">
+							{#each [0, 1, 2, 3, 4] as act}
+								<option value={act} selected={selectedOp.act === act}>Act {act}</option>
+							{/each}
+						</select>
+						<button type="submit">Set current act</button>
+					</form>
+
+					<form method="POST" action="?/bypassChallenge&id={selectedOp.id}" class="tool-card danger-tool">
+						<input type="hidden" name="operativeId" value={selectedOp.id} />
+						<strong>Issue Stage Bypass</strong>
+						<select name="challengeId" required aria-label="Challenge to bypass">
+							{#each challenges as challenge (challenge.id)}
+								<option value={challenge.id}>
+									{challenge.id} · {challenge.name} · {challengeStatuses[challenge.id] ?? 'unstarted'}
+								</option>
+							{/each}
+						</select>
+						<input name="reason" required maxlength="240" placeholder="Required operator reason" />
+						<button type="submit">Mark stage cleared</button>
+					</form>
+				</div>
+
+				<h3 class="detail-section-title">Active Admin Hints ({adminHints.length})</h3>
+				{#if adminHints.length}
+					<ul class="hint-list">
+						{#each adminHints.slice().reverse() as hint (hint.id)}
+							<li>
+								<span class="hint-target">{hint.challengeId ?? 'general'}</span>
+								<span>{hint.text}</span>
+								<time>{fmtDate(hint.createdAt)}</time>
+							</li>
+						{/each}
+					</ul>
+				{:else}
+					<p class="empty-hint">No admin hints have been sent to this operative.</p>
+				{/if}
+			</section>
 
 			<!-- Inventory -->
 			<h3 class="detail-section-title">Inventory ({detail.inventory.length} items)</h3>
@@ -172,6 +257,9 @@
 	.page-header { border-bottom: 1px solid #2a2a3a; padding-bottom: 1rem; }
 	.page-title  { font-size: 1.3rem; font-weight: 700; color: #8ecf5e; margin: 0; }
 	.page-sub    { margin: 0.3rem 0 0; font-size: 0.75rem; color: #6b6b80; }
+	.action-message { margin: 0.6rem 0 0; font-size: 0.72rem; }
+	.action-message.success { color: #8ecf5e; }
+	.action-message.error { color: #e08070; }
 
 	/* Filters */
 	.filters {
@@ -237,6 +325,44 @@
 		margin: 0.25rem 0 0;
 	}
 
+	.interventions {
+		display: flex;
+		flex-direction: column;
+		gap: 0.65rem;
+		padding: 0.8rem;
+		border: 1px solid #283528;
+		border-radius: 0.4rem;
+		background: #0c140d;
+	}
+	.intervention-note { margin: 0; color: #6b806b; font-size: 0.68rem; }
+	.tool-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; }
+	.tool-card {
+		display: flex; flex-direction: column; gap: 0.45rem;
+		padding: 0.65rem; background: #101a11; border: 1px solid #263526; border-radius: 0.35rem;
+	}
+	.tool-card strong { color: #8ecf5e; font-size: 0.72rem; }
+	.tool-card select, .tool-card input, .tool-card textarea {
+		width: 100%; box-sizing: border-box; border: 1px solid #303a30; border-radius: 0.25rem;
+		background: #0a0f0b; color: #c4c4d4; font: inherit; font-size: 0.7rem; padding: 0.35rem;
+	}
+	.tool-card textarea { min-height: 4rem; resize: vertical; }
+	.tool-card label { color: #788878; font-size: 0.65rem; }
+	.tool-card button {
+		align-self: flex-start; border: 1px solid #4a7a3a; border-radius: 0.25rem;
+		background: #183018; color: #9add70; cursor: pointer; padding: 0.3rem 0.55rem; font: inherit; font-size: 0.68rem;
+	}
+	.tool-card button:hover { background: #214421; }
+	.danger-tool { border-color: #513c25; background: #19130d; }
+	.danger-tool strong { color: #d0a06a; }
+	.danger-tool button { border-color: #76502c; background: #35200f; color: #e0aa72; }
+	.hint-list { display: flex; flex-direction: column; gap: 0.35rem; list-style: none; margin: 0; padding: 0; }
+	.hint-list li {
+		display: grid; grid-template-columns: auto 1fr auto; gap: 0.5rem; align-items: baseline;
+		padding: 0.35rem 0.5rem; border: 1px solid #263526; border-radius: 0.25rem; color: #b5c5b5; font-size: 0.7rem;
+	}
+	.hint-target { color: #8ecf5e; font-weight: 600; }
+	.hint-list time { color: #566556; font-size: 0.6rem; }
+
 	/* Inventory list */
 	.inv-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.4rem; }
 	.inv-item {
@@ -272,4 +398,8 @@
 
 	/* Table card */
 	.table-card { border: 1px solid #2a2a3a; border-radius: 0.5rem; background: #12121a; overflow: hidden; }
+	@media (max-width: 800px) {
+		.tool-grid { grid-template-columns: 1fr; }
+		.hint-list li { grid-template-columns: 1fr; }
+	}
 </style>

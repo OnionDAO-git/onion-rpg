@@ -266,7 +266,7 @@ async function handleMerchant(
 	});
 }
 
-/** NPC_DIALOGUE_TURN: forward to DEEPDISH (AI agent's /api/ai/npc endpoint). */
+/** NPC_DIALOGUE_TURN: validate through the challenge engine when identity is available. */
 async function handleNpcDialogue(
 	_beaconId: string,
 	msgId: number,
@@ -278,6 +278,36 @@ async function handleNpcDialogue(
 		return encodeError(msgId, 'BAD_REQUEST', 'challengeId (c) and utterance (t) required');
 	}
 
+	if (body.h) {
+		const operative = await resolveOperative(body.h);
+		const [attempt] = await sql<{ id: string }[]>`
+			SELECT id FROM challenge_attempts
+			WHERE operative_id = ${operative.id}
+			  AND challenge_id = ${body.c}
+			  AND status = 'started'
+			ORDER BY started_at DESC LIMIT 1
+		`;
+		if (!attempt) {
+			return encodeError(msgId, 'NO_SESSION', 'begin the challenge first');
+		}
+
+		const state = await getGameState(operative.id);
+		const turn = Number(state?.flags[`${body.c === '2.0' ? 'smoking_car' : body.c}:turn`] ?? 0);
+		const result = await submitChallenge(
+			operative.id,
+			body.c,
+			{ t: body.t, utterance: body.t, sessionId: body.s, turn },
+			attempt.id
+		);
+		return encodeResponse(MsgType.NPC_DIALOGUE_REPLY, nextMsgId(), {
+			t: result.message ?? '',
+			s: body.s,
+			passed: result.passed,
+			continued: result.continued ?? false
+		});
+	}
+
+	// Compatibility path for older badges that do not include hardware id.
 	try {
 		// Internal call to the AI handler — same process, different route.
 		// We use fetch to the loopback URL so routing stays clean and the AI
@@ -288,10 +318,16 @@ async function handleNpcDialogue(
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ challengeId: body.c, sessionId: body.s, utterance: body.t })
 		});
-		const data = (await res.json()) as { reply: string; sessionId: string; done?: boolean };
+		const data = (await res.json()) as {
+			reply: string;
+			sessionId?: string;
+			passed?: boolean;
+			done?: boolean;
+		};
 		return encodeResponse(MsgType.NPC_DIALOGUE_REPLY, nextMsgId(), {
-			reply: data.reply,
-			sessionId: data.sessionId,
+			t: data.reply,
+			s: data.sessionId,
+			passed: data.passed ?? false,
 			done: data.done ?? false
 		});
 	} catch (e) {

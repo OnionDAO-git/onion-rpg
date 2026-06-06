@@ -304,6 +304,8 @@ export interface MerchantInputBody {
 
 export interface NpcDialogueTurnBody {
 	c: string; // challengeId
+	/** badge hardware id, used to bind the turn to the correct active attempt */
+	h?: string;
 	/** storyteller session id (omit to start a new session) */
 	s?: string;
 	/** player utterance */

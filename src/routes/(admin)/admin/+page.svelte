@@ -58,7 +58,7 @@
 		<StatCard
 			label="Onions Awarded"
 			value={stats.totalOnionsAwarded.toLocaleString()}
-			sub="settled rewards"
+			sub="completed rewards"
 			accent="green"
 		/>
 	</section>
