@@ -43,7 +43,7 @@
 	<header class="page-header">
 		<h1 class="page-title">DEEPDISH Storyteller Console</h1>
 		<p class="page-sub">
-			"glen-agent-final-FINAL-v3 — committed to prod. Went to lunch. Never came back."
+			"glen-agent-2026-06-06-v3 — committed to prod. Went to lunch. Never came back."
 		</p>
 	</header>
 

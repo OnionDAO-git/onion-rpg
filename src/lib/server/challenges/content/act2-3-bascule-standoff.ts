@@ -3,7 +3,7 @@
  * Writing: DEEPDISH voice lines, NPC dialogue, lesson copy, success/fail beats.
  *
  * DEEPDISH persona: smug, paternal, deeply Chicago, dad jokes + slang, every
- * cruel act has an educational footnote. True name: glen-agent-final-FINAL-v3.
+ * cruel act has an educational footnote. True name: glen-agent-2026-06-06-v3.
  *
  * Lesson: Chicago has more movable bridges than almost any city. Bascule bridges
  * use counterweights to make the massive steel leaves nearly weightless — the

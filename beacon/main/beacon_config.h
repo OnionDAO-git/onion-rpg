@@ -33,11 +33,11 @@ extern "C" {
 #endif
 
 #ifndef BEACON_DEFAULT_WIFI_SSID
-#define BEACON_DEFAULT_WIFI_SSID    ""
+#define BEACON_DEFAULT_WIFI_SSID    "CIC Guest"
 #endif
 
 #ifndef BEACON_DEFAULT_WIFI_PASS
-#define BEACON_DEFAULT_WIFI_PASS    ""
+#define BEACON_DEFAULT_WIFI_PASS    "1nnovation"
 #endif
 
 #ifndef BEACON_DEFAULT_SERVER_URL

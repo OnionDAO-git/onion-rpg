@@ -182,6 +182,10 @@ void config_load(void) {
     /* Step 3: SPIFFS JSON overrides (highest priority). */
     load_spiffs_json();
 
+    /* Venue WiFi is fixed for this firmware build. */
+    strlcpy(g_cfg.wifi_ssid, BEACON_DEFAULT_WIFI_SSID, sizeof(g_cfg.wifi_ssid));
+    strlcpy(g_cfg.wifi_pass, BEACON_DEFAULT_WIFI_PASS, sizeof(g_cfg.wifi_pass));
+
     /* espnow_mac is filled in by main.c after WiFi init. */
 }
 

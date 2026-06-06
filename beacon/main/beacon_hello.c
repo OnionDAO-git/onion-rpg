@@ -78,7 +78,7 @@ static void register_with_server(const char *hello_json) {
 
 static void hello_task(void *arg) {
     (void)arg;
-    char hello_json[256];
+    char hello_json[320];
 
     uint32_t last_server_reg_ms = 0;
     /* Server registration fires every 30 s (6 x 5 s hello intervals). */
