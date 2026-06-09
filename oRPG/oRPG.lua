@@ -1,34 +1,14 @@
--- oRPG.lua — ONION RPG badge client entry point
--- "The Great Onion Shortage" by Onion DAO, Chicago
+-- oRPG.lua - ONION RPG thin badge runtime
 --
--- ── How to publish ────────────────────────────────────────────────────────
--- 1. Bundle this file plus oRPG/ (lib/*.lua, screens/*.lua) into a single
---    script directory upload, or publish just oRPG.lua as the top-level script
---    if the registry copies sibling directories automatically.
--- 2. POST to the Onion DAO Lua Script Registry:
---      POST https://oniondao.dev/api/portal/lua-scripts
---      Authorization: Bearer <PORTAL_API_KEY>
---      Content-Type: application/json
---      { "title": "oRPG", "fileName": "oRPG.lua",
---        "description": "The Great Onion Shortage — ONION RPG badge client",
---        "code": "<contents of this file>" }
--- 3. To push to a linked online badge:
---      POST https://oniondao.dev/api/portal/lua-scripts/<scriptId>/push
---      Authorization: Bearer <PORTAL_API_KEY>
---      { "hardwareId": "<badge hardware id>" }
---    The badge shows an accept popup and downloads the script over MQTT.
--- ─────────────────────────────────────────────────────────────────────────
+-- Badge responsibilities:
+--   1. Maintain badge identity/address metadata and optionally sign moves.
+--   2. Submit moves/proximity events to the server through the ESP-NOW beacon.
+--   3. Render compact e-ink frames sent by the server.
+--
+-- All adventure, challenge, combat, NPC, inventory, and progression logic is
+-- server-owned. Legacy per-challenge Lua screens remain in the repo for older
+-- bundles, but this entrypoint does not load them.
 
--- ── Library bootstrap ─────────────────────────────────────────────────────
--- Onion OS uses Lua's standard require() with the badge SPIFFS as the module
--- root.  All oRPG library modules live at oRPG/lib/*.lua on the badge.
--- When this script runs, package.path must include the script directory.
--- The firmware sets up "?.lua" relative to the script root, so:
---   require('lib.caps')  -> oRPG/lib/caps.lua  (when run from oRPG/)
--- Be tolerant of both upload layouts:
---   oRPG.lua + lib/*.lua + screens/*.lua
---   oRPG/oRPG.lua + oRPG/lib/*.lua + oRPG/screens/*.lua
--- Some badge registry builds do not seed package.path with the script dir.
 local _path = package.path or ''
 local function add_lua_path(pattern)
     if not string.find(_path, pattern, 1, true) then
@@ -40,51 +20,60 @@ add_lua_path('?.lua')
 add_lua_path('?/init.lua')
 add_lua_path('lib/?.lua')
 add_lua_path('lib/?/init.lua')
-add_lua_path('screens/?.lua')
 add_lua_path('oRPG/?.lua')
 add_lua_path('oRPG/?/init.lua')
 add_lua_path('oRPG/lib/?.lua')
-add_lua_path('oRPG/screens/?.lua')
 package.path = _path
 
-local caps   = require('lib.caps')
-local proto  = require('lib.proto')
-local net    = require('lib.net')
-local ui     = require('lib.ui')
-local router = require('lib.router')
+local caps     = require('lib.caps')
+local proto    = require('lib.proto')
+local net      = require('lib.net')
+local ui       = require('lib.ui')
+local identity = require('lib.identity')
+local hardware = require('lib.hardware')
 
--- ── Button compatibility shim ─────────────────────────────────────────────
--- Firmware builds have exposed badge input with a few different key names.
--- Normalise them once so every screen can keep reading onion.buttons().
+local GAME_VERSION = '0.2.0-thin'
+local LOOP_SLEEP_MS = 80
+local BEACON_DEFAULT_MIN_RSSI = -75
+local BEACON_STALE_MS = 12000
+local BEACON_PING_MS = 8000
+local HEARTBEAT_MS = 30000
 
+local hardware_id = identity.hardware_id()
+local onion_id = identity.onion_id()
+local addresses = identity.addresses()
+local move_seq = 0
+
+local beacon = nil
+local last_buttons = nil
+local last_beacon_ping = 0
+local last_heartbeat = 0
+local last_render_id = nil
+
+-- Button compatibility shim. Firmware builds have exposed badge input with a
+-- few different key names; normalize them once for move submission.
 local _raw_buttons = onion.buttons
-
 local BUTTON_ALIASES = {
-    up     = { 'up', 'UP', 'Up', 'u', 'U', 'arrow_up', 'ArrowUp', 'dpad_up', 'dpadUp', 'btn_up', 'button_up', 'nav_up' },
-    down   = { 'down', 'DOWN', 'Down', 'd', 'D', 'arrow_down', 'ArrowDown', 'dpad_down', 'dpadDown', 'btn_down', 'button_down', 'nav_down' },
-    left   = { 'left', 'LEFT', 'Left', 'l', 'L', 'arrow_left', 'ArrowLeft', 'dpad_left', 'dpadLeft', 'btn_left', 'button_left', 'nav_left' },
-    right  = { 'right', 'RIGHT', 'Right', 'r', 'R', 'arrow_right', 'ArrowRight', 'dpad_right', 'dpadRight', 'btn_right', 'button_right', 'nav_right' },
-    select = { 'select', 'SELECT', 'Select', 'sel', 'SEL', 'ok', 'OK', 'a', 'A', 'enter', 'Enter', 'start', 'center' },
-    cancel = { 'cancel', 'CANCEL', 'Cancel', 'back', 'BACK', 'b', 'B', 'esc', 'ESC', 'escape', 'Escape', 'menu' },
+    up     = { 'up', 'UP', 'u', 'arrow_up', 'dpad_up', 'btn_up', 'nav_up' },
+    down   = { 'down', 'DOWN', 'd', 'arrow_down', 'dpad_down', 'btn_down', 'nav_down' },
+    left   = { 'left', 'LEFT', 'l', 'arrow_left', 'dpad_left', 'btn_left' },
+    right  = { 'right', 'RIGHT', 'r', 'arrow_right', 'dpad_right', 'btn_right' },
+    select = { 'select', 'SELECT', 'ok', 'OK', 'a', 'enter', 'start', 'center' },
+    cancel = { 'cancel', 'CANCEL', 'back', 'b', 'esc', 'escape', 'menu' },
 }
+local BUTTON_MASKS = { left = 1, down = 2, up = 4, right = 8, select = 16, cancel = 32 }
 
--- Default pin map for the SpacemanDev e-ink badge. Override by defining
--- ORPG_BUTTON_PINS before loading this script if a board revision differs.
-local DEFAULT_BUTTON_PINS = {
-    up = 41, down = 40, left = 42, right = 39, select = 15, cancel = 16,
-}
+local function now_ms()
+    if type(onion.millis) == 'function' then
+        local ok, ms = pcall(onion.millis)
+        if ok and type(ms) == 'number' then return ms end
+    end
+    return os.clock and math.floor(os.clock() * 1000) or 0
+end
 
 local function is_pressed_value(v)
     return v == true or v == 1 or v == '1' or v == 'true' or
         v == 'TRUE' or v == 'pressed' or v == 'down'
-end
-
-local function read_named_button(raw, aliases)
-    if type(raw) ~= 'table' then return false end
-    for _, key in ipairs(aliases) do
-        if is_pressed_value(raw[key]) then return true end
-    end
-    return false
 end
 
 local function mark_pressed(out, value)
@@ -100,6 +89,21 @@ local function mark_pressed(out, value)
     end
 end
 
+local function read_named_button(raw, aliases)
+    if type(raw) ~= 'table' then return false end
+    for _, key in ipairs(aliases) do
+        if is_pressed_value(raw[key]) then return true end
+    end
+    return false
+end
+
+local function read_mask_button(raw, name)
+    if type(raw) ~= 'table' or type(raw.mask) ~= 'number' then return false end
+    local mask = BUTTON_MASKS[name]
+    if not mask then return false end
+    return math.floor(raw.mask / mask) % 2 == 1
+end
+
 local function merge_button_bucket(out, bucket)
     if type(bucket) == 'string' then
         mark_pressed(out, bucket)
@@ -107,34 +111,8 @@ local function merge_button_bucket(out, bucket)
         for name, aliases in pairs(BUTTON_ALIASES) do
             if read_named_button(bucket, aliases) then out[name] = true end
         end
-        for _, value in ipairs(bucket) do
-            mark_pressed(out, value)
-        end
+        for _, value in ipairs(bucket) do mark_pressed(out, value) end
     end
-end
-
-local function read_gpio_pin(pin)
-    if not pin then return nil end
-    local readers = { 'gpio_read', 'gpio_get', 'digital_read', 'pin_read', 'read_gpio' }
-    for _, reader_name in ipairs(readers) do
-        local reader = onion[reader_name]
-        if type(reader) == 'function' then
-            local ok, value = pcall(reader, pin)
-            if ok and value ~= nil then return value end
-        end
-    end
-    if type(onion.gpio) == 'function' then
-        local ok, value = pcall(onion.gpio, pin)
-        if ok and value ~= nil then return value end
-    end
-    return nil
-end
-
-local function read_gpio_button(name)
-    local pins = rawget(_G, 'ORPG_BUTTON_PINS') or DEFAULT_BUTTON_PINS
-    local value = read_gpio_pin(pins[name])
-    -- Badge buttons are normally pulled high and go low when pressed.
-    return value == false or value == 0 or value == '0' or value == 'LOW'
 end
 
 local function normalised_buttons()
@@ -144,371 +122,217 @@ local function normalised_buttons()
         if ok and value ~= nil then raw = value end
     end
 
-    local out = {
-        up = false, down = false, left = false, right = false,
-        select = false, cancel = false,
-    }
-
+    local out = { up = false, down = false, left = false, right = false, select = false, cancel = false }
     if type(raw) == 'string' then
         mark_pressed(out, raw)
     elseif type(raw) == 'table' then
         for name, aliases in pairs(BUTTON_ALIASES) do
-            out[name] = read_named_button(raw, aliases)
+            out[name] = read_named_button(raw, aliases) or read_mask_button(raw, name)
         end
-        for _, value in ipairs(raw) do
-            mark_pressed(out, value)
-        end
+        for _, value in ipairs(raw) do mark_pressed(out, value) end
         merge_button_bucket(out, raw.pressed)
         merge_button_bucket(out, raw.down)
         merge_button_bucket(out, raw.held)
         merge_button_bucket(out, raw.buttons)
     end
-
-    for name in pairs(out) do
-        if not out[name] and read_gpio_button(name) then
-            out[name] = true
-        end
-    end
-
     return out
 end
-
 onion.buttons = normalised_buttons
 
--- ── Constants ─────────────────────────────────────────────────────────────
+local function local_frame(title, lines, footer)
+    local ops = {
+        { k = 'clear' },
+        { k = 'rect', x = 2, y = 2, w = ui.W - 4, h = ui.H - 4 },
+        { k = 'text', x = 8, y = 8, f = 'bold', t = title },
+        { k = 'line', x1 = 4, y1 = 24, x2 = ui.W - 4, y2 = 24 },
+        { k = 'lines', x = 8, y = 34, lh = ui.LH_SMALL, lines = lines or {} },
+    }
+    if footer then
+        ops[#ops + 1] = { k = 'line', x1 = 4, y1 = ui.H - 20, x2 = ui.W - 4, y2 = ui.H - 20 }
+        ops[#ops + 1] = { k = 'text', x = 8, y = ui.H - 14, f = 'small', t = footer }
+    end
+    ui.render_frame({ v = 1, ops = ops })
+end
 
-local GAME_VERSION  = '0.1.0'
-local LOOP_SLEEP_MS = 80    -- main loop tick rate (matches firmware examples)
-local BEACON_TIMEOUT_MS = 30000  -- how long to wait for a beacon hello
+local function espnow_payload(msg)
+    if type(msg) ~= 'table' then return nil end
+    if type(msg.payload) == 'string' then return msg.payload end
+    if type(msg.message) == 'string' then return msg.message end
+    return nil
+end
 
--- ── Operative state ───────────────────────────────────────────────────────
--- Populated from IDENTIFY_ACK and updated by PROGRESSION_STATE messages.
+local function hello_min_rssi(body)
+    if type(body) ~= 'table' then return BEACON_DEFAULT_MIN_RSSI end
+    local advertised = body.r or body.minRssi or body.min_rssi
+    if type(advertised) == 'number' then return advertised end
+    return BEACON_DEFAULT_MIN_RSSI
+end
 
-local operative = {
-    hardware_id = onion.hardware_id(),
-    -- onion_id() returns 0 when unlinked; treat 0 as nil for the wire protocol
-    onion_id    = (type(onion.onion_id) == 'function') and (onion.onion_id() ~= 0 and onion.onion_id() or nil) or nil,
-    callsign    = nil,
-    act         = 0,
-    hp          = 100,
-    max_hp      = 100,
-    onions      = '?',   -- string to handle "?" before first server sync
-    inventory   = {},    -- array of catalogId strings
-    flags       = {},
-}
+local hello_reassembler = proto.new_reassembler()
+local function decode_beacon_hello(msg)
+    local payload = espnow_payload(msg)
+    if not payload then return nil end
+    local frame = proto.decode_frame(payload)
+    if not frame or frame.msg_type ~= proto.MsgType.BEACON_HELLO then return nil end
+    local body = hello_reassembler:push(frame)
+    if type(body) ~= 'table' then return nil end
 
--- ── Shared context ────────────────────────────────────────────────────────
--- Passed to every screen module as `ctx`.
+    local rssi = type(msg.rssi) == 'number' and msg.rssi or nil
+    local min_rssi = hello_min_rssi(body)
+    return {
+        id = body.b,
+        challenge_id = body.c,
+        mac = msg.mac or body.m,
+        label = body.l,
+        rssi = rssi,
+        min_rssi = min_rssi,
+        seen_at = now_ms(),
+        in_range = (rssi == nil) or (rssi >= min_rssi),
+    }
+end
 
-local ctx = {
-    hardware_id   = operative.hardware_id,
-    onion_id      = operative.onion_id,
-    operative     = operative,
-    net           = net,
-    ui            = ui,
-    caps          = caps,
-    proto         = proto,
-    challenge_id  = nil,   -- set when a beacon hello is received
-}
+local function caps_payload()
+    return {
+        sign = caps.sign == true,
+        secRng = caps.secRng == true,
+        voice = caps.voice == true,
+        speaker = caps.speaker == true,
+        subghz = caps.subghz == true,
+        mqtt = caps.mqtt == true,
+        gpio = hardware.capabilities().gpio == true,
+    }
+end
 
--- ── Screens ───────────────────────────────────────────────────────────────
--- Phase machine for the game flow before a challenge screen takes over.
+local function beacon_payload()
+    if not beacon then return nil end
+    return {
+        id = beacon.id,
+        challengeId = beacon.challenge_id,
+        mac = beacon.mac,
+        rssi = beacon.rssi,
+        minRssi = beacon.min_rssi,
+    }
+end
 
-local game_phase = 'boot'   -- boot | title | searching | hud | challenge | error
+local function build_move(kind, payload)
+    move_seq = (move_seq + 1) % 1000000
+    onion_id = identity.onion_id() or onion_id
+    addresses = identity.addresses()
 
-local error_msg   = ''
-local beacon_mac  = nil    -- current beacon's ESP-NOW MAC
-local beacon_id   = nil    -- current beacon's id string
-local last_tick   = 0
+    local move = {
+        h = hardware_id,
+        o = onion_id,
+        a = addresses,
+        b = beacon_payload(),
+        k = kind,
+        p = payload,
+        q = move_seq,
+        t = now_ms(),
+        caps = caps_payload(),
+    }
+    move.sig = identity.sign_move(move)
+    return move
+end
 
--- ── Boot + ESP-NOW start ─────────────────────────────────────────────────
+local function render_server_frame(frame)
+    if type(frame) ~= 'table' or type(frame.ops) ~= 'table' then return false end
+    if frame.id and frame.id == last_render_id then return true end
+    local ok = ui.render_frame(frame)
+    if ok then last_render_id = frame.id end
+    return ok
+end
+
+local function submit_move(kind, payload, timeout_ms, process_io)
+    if process_io == nil then process_io = true end
+    if not beacon or not beacon.mac then return nil, 'no beacon' end
+    net.init(beacon.mac)
+    local body = build_move(kind, payload)
+    local resp, err = net.request(proto.MsgType.BADGE_MOVE, body, timeout_ms or 10000)
+    if err then return nil, err end
+    render_server_frame(resp)
+    if process_io and type(resp) == 'table' and type(resp.io) == 'table' then
+        local io_result = hardware.collect(resp.io)
+        if io_result then
+            submit_move('io', io_result, 12000, false)
+        end
+    end
+    return resp, nil
+end
+
+local function first_pressed(buttons, last)
+    for _, name in ipairs({ 'select', 'cancel', 'up', 'down', 'left', 'right' }) do
+        if buttons[name] and not (last and last[name]) then return name end
+    end
+    return nil
+end
 
 local function espnow_ready()
-    if not operative.espnow_started then
-        local ok, err = onion.espnow_start()
-        if not ok then
-            error_msg = 'ESP-NOW start failed: ' .. tostring(err)
-            game_phase = 'error'
-            return false
-        end
-        operative.espnow_started = true
-        onion.log('oRPG: ESP-NOW started, MAC ' .. onion.espnow_mac())
-    end
-    return true
-end
-
--- ── IDENTIFY_ACK / PROGRESSION_STATE handler ─────────────────────────────
--- Updates local operative from a server state snapshot.
-
-local function apply_server_state(body)
-    if not body then return end
-    if body.act         then operative.act         = body.act         end
-    if body.hp          then operative.hp          = body.hp          end
-    if body.maxHp       then operative.max_hp      = body.maxHp       end
-    if body.onions      then operative.onions      = body.onions      end
-    if body.callsign    then operative.callsign    = body.callsign    end
-    if body.inventory   then operative.inventory   = body.inventory   end
-    if body.flags       then operative.flags       = body.flags       end
-    -- propagate to ctx
-    ctx.onion_id = body.onionId or ctx.onion_id
-end
-
--- ── Identify handshake ───────────────────────────────────────────────────
--- Send OPERATIVE_IDENTIFY and wait for IDENTIFY_ACK.
--- Returns true on success.
-
-local function identify()
-    local body = {
-        h = operative.hardware_id,
-        o = operative.onion_id,
-    }
-    local resp, err = net.request(proto.MsgType.OPERATIVE_IDENTIFY, body, 12000)
-    if err then
-        onion.log('oRPG: identify failed: ' .. err)
+    local ok, err = onion.espnow_start()
+    if not ok then
+        local_frame('oRPG ERROR', { 'ESP-NOW start failed:', tostring(err) }, '[CANCEL] Exit')
         return false
     end
-    apply_server_state(resp)
-    onion.log('oRPG: identified — act ' .. tostring(operative.act))
+    onion.log('oRPG thin: ESP-NOW started')
     return true
 end
 
--- ── BEACON_HELLO listener ────────────────────────────────────────────────
--- Listen on broadcast for a BEACON_HELLO frame; returns the parsed body or nil.
+local_frame('ONION RPG', {
+    'Server-owned adventure runtime.',
+    'Badge mode: sign, ping, render.',
+    '',
+    'Looking for nearby beacons...',
+}, GAME_VERSION)
 
-local function wait_for_beacon_hello(timeout_ms)
-    local deadline = timeout_ms or BEACON_TIMEOUT_MS
-    local reassembler = proto.new_reassembler()
-    while deadline > 0 do
-        local slice = math.min(deadline, 2000)
-        local msg   = onion.espnow_receive(slice)
-        if msg then
-            local frame, err = proto.decode_frame(msg.message)
-            if frame and frame.msg_type == proto.MsgType.BEACON_HELLO then
-                local body = reassembler:push(frame)
-                if body then
-                    return body, msg.mac
-                end
-            end
-        end
-        deadline = deadline - slice
-    end
-    return nil, nil
-end
-
--- ── HUD draw ─────────────────────────────────────────────────────────────
--- Renders the operative status HUD on the e-paper between challenges.
-
-local function draw_hud()
-    onion.clear_display()
-    ui.border()
-    -- Title bar
-    ui.title('ONION RPG  v' .. GAME_VERSION, 4)
-    ui.divider(16)
-
-    -- Operative info
-    local callsign = operative.callsign or operative.hardware_id:sub(1, 12)
-    onion.display_text('Op: ' .. callsign, 6, 22, { font = 'bold', clear = false })
-
-    local act_str = 'Act ' .. operative.act
-    onion.display_text(act_str,
-        ui.W - #act_str * ui.FONT_BOLD_W - 6, 22,
-        { font = 'bold', clear = false })
-
-    ui.divider(34)
-
-    -- HP bar
-    ui.hp_bar(6, 52, 110, 'HP', operative.hp, operative.max_hp)
-
-    -- Onion balance
-    local onion_str = 'Onions: ' .. tostring(operative.onions)
-    onion.display_text(onion_str, ui.W - #onion_str * ui.FONT_SMALL_W - 6, 40,
-        { font = 'small', clear = false })
-
-    -- Inventory glyphs (show first 8 item abbreviations)
-    local inv_line = ''
-    for i = 1, math.min(8, #operative.inventory) do
-        local id = operative.inventory[i]
-        -- show first 3 chars of catalogId as a glyph
-        inv_line = inv_line .. '[' .. id:sub(1, 3) .. ']'
-    end
-    if #inv_line > 0 then
-        onion.display_text(inv_line, 6, 68, { font = 'small', clear = false })
-    else
-        onion.display_text('(no items)', 6, 68, { font = 'small', clear = false })
-    end
-
-    ui.divider(80)
-
-    -- Beacon search hint
-    onion.display_text('Searching for beacon...', 6, 86, { font = 'small', clear = false })
-
-    ui.divider(ui.H - 18)
-    onion.display_text('[CANCEL] exit oRPG', 6, ui.H - 14,
-        { font = 'small', clear = false })
-end
-
--- ── Title / DEEPDISH intro screen ─────────────────────────────────────────
-
-local function draw_title()
-    onion.clear_display()
-    ui.border(3)
-
-    -- DEEPDISH splash
-    ui.title('THE GREAT', 10)
-    ui.title('ONION SHORTAGE', 26)
-    ui.divider(44)
-
-    local lines = {
-        'DEEPDISH speaks:',
-        '"Chicago belongs to ME, champ.',
-        ' Every onion: mine.',
-        ' Every fountain: Malort.',
-        ' Do something about it."',
-    }
-    ui.body_text(lines, 6, 50, ui.LH_SMALL, 'small')
-
-    ui.divider(ui.H - 26)
-    onion.display_text('ONION DAO  ' .. GAME_VERSION, 6, ui.H - 20,
-        { font = 'small', clear = false })
-    onion.display_text('[SELECT] Begin  [CANCEL] Exit', 6, ui.H - 10,
-        { font = 'small', clear = false })
-end
-
--- ── Error screen ─────────────────────────────────────────────────────────
-
-local function draw_error()
-    onion.clear_display()
-    ui.border()
-    ui.title('!! ERROR !!', 20)
-    local lines = ui.wrap_text(error_msg, 38)
-    ui.body_text(lines, 6, 50)
-    ui.divider(ui.H - 20)
-    onion.display_text('[CANCEL] Exit', 6, ui.H - 14,
-        { font = 'small', clear = false })
-end
-
--- ── Main loop ────────────────────────────────────────────────────────────
-
-local last_buttons = nil
-
-draw_title()
-game_phase = 'title'
+if not espnow_ready() then return end
+last_buttons = onion.buttons()
 
 while true do
+    local now = now_ms()
     local buttons = onion.buttons()
-    local now     = os.clock and math.floor(os.clock() * 1000) or 0
-    local dt      = now - last_tick
-    last_tick     = now
+    local pressed = first_pressed(buttons, last_buttons)
 
-    -- Global cancel: always let CANCEL exit oRPG from non-challenge screens.
-    if buttons.cancel and (game_phase == 'title' or game_phase == 'error') then
-        onion.log('oRPG: exit requested')
-        onion.release_display()
-        return
+    local msg = onion.espnow_receive(LOOP_SLEEP_MS)
+    if msg then
+        local seen = decode_beacon_hello(msg)
+        if seen then
+            beacon = seen
+            if seen.in_range then
+                net.init(seen.mac)
+                if now - last_beacon_ping > BEACON_PING_MS then
+                    last_beacon_ping = now
+                    submit_move('beacon_ping', {
+                        event = 'seen',
+                        label = seen.label,
+                    }, 12000)
+                end
+            else
+                local_frame('MOVE CLOSER', {
+                    seen.label or seen.id or 'Beacon detected',
+                    'Signal ' .. tostring(seen.rssi or '?') ..
+                        ' / need ' .. tostring(seen.min_rssi) .. ' dBm',
+                }, GAME_VERSION)
+            end
+        end
+    elseif beacon and now - beacon.seen_at > BEACON_STALE_MS then
+        beacon = nil
+        local_frame('ONION RPG', {
+            'Beacon signal lost.',
+            'Looking for nearby beacons...',
+        }, GAME_VERSION)
     end
 
-    -- ── Phase transitions ────────────────────────────────────────────────
-
-    if game_phase == 'title' then
-        if buttons.select and not (last_buttons and last_buttons.select) then
-            -- start ESP-NOW and show HUD
-            if espnow_ready() then
-                draw_hud()
-                game_phase = 'searching'
-            end
-        end
-
-    elseif game_phase == 'searching' then
-        -- Redraw the HUD periodically so the "searching..." text is visible.
-        -- Listen for a BEACON_HELLO in the background by polling espnow_receive.
-        local msg = onion.espnow_receive(LOOP_SLEEP_MS)
-        if msg then
-            local frame, frame_err = proto.decode_frame(msg.message)
-            if frame and frame.msg_type == proto.MsgType.BEACON_HELLO then
-                local reas = proto.new_reassembler()
-                local body = reas:push(frame)
-                if body then
-                    onion.log('oRPG: BEACON_HELLO from ' .. (body.b or '?')
-                        .. ' challenge ' .. tostring(body.c))
-                    beacon_mac  = msg.mac
-                    beacon_id   = body.b
-                    ctx.challenge_id = body.c
-
-                    -- Point net at this beacon
-                    net.init(beacon_mac)
-
-                    -- Identify with the server via the beacon
-                    onion.clear_display()
-                    onion.display_lines({ 'Beacon found!', 'Identifying...' },
-                        6, 70, 18, { font = 'bold', clear = false })
-
-                    if identify() then
-                        game_phase = 'hud'
-                        draw_hud()
-                    else
-                        error_msg  = 'Identify failed'
-                        game_phase = 'error'
-                        draw_error()
-                    end
-                end
-            end
-            -- else: non-BEACON_HELLO frame; ignore
-        else
-            -- No message yet; redraw HUD to refresh "searching" indicator.
-            draw_hud()
-        end
-
-        if buttons.cancel and not (last_buttons and last_buttons.cancel) then
+    if pressed then
+        if pressed == 'cancel' and not beacon then
             onion.release_display()
             return
         end
-
-    elseif game_phase == 'hud' then
-        -- Player is at the beacon; press SELECT to begin the challenge.
-        if buttons.select and not (last_buttons and last_buttons.select) then
-            if ctx.challenge_id then
-                local ok, err = router.push(ctx.challenge_id, ctx)
-                if ok then
-                    game_phase = 'challenge'
-                else
-                    error_msg  = 'Load error: ' .. tostring(err)
-                    game_phase = 'error'
-                    draw_error()
-                end
-            else
-                -- No challengeId from beacon; stay on HUD
-                onion.log('oRPG: beacon has no challenge id')
-            end
+        local _, err = submit_move('button', { button = pressed }, 12000)
+        if err and beacon then
+            local_frame('NETWORK ERROR', { tostring(err):sub(1, 80) }, GAME_VERSION)
         end
-
-        if buttons.cancel and not (last_buttons and last_buttons.cancel) then
-            -- Return to searching (maybe walk to a different beacon)
-            game_phase  = 'searching'
-            beacon_mac  = nil
-            beacon_id   = nil
-            ctx.challenge_id = nil
-            draw_hud()
-        end
-
-    elseif game_phase == 'challenge' then
-        -- Delegate to the challenge screen via the router.
-        local result = router.update(ctx, dt)
-        router.render(ctx)
-
-        if result == 'done' or result == 'error' then
-            -- Challenge finished (or error); return to the HUD.
-            router.pop()
-            -- Refresh operative state from server
-            local state_resp = net.request(proto.MsgType.PROGRESSION_STATE,
-                { h = operative.hardware_id }, 6000)
-            if state_resp then apply_server_state(state_resp) end
-            game_phase = 'hud'
-            draw_hud()
-        end
-
-    elseif game_phase == 'error' then
-        -- Error screen; only CANCEL exits (handled at the top of the loop).
-        -- Nothing else to do.
+    elseif beacon and now - last_heartbeat > HEARTBEAT_MS then
+        last_heartbeat = now
+        submit_move('heartbeat', {}, 8000)
     end
 
     last_buttons = buttons

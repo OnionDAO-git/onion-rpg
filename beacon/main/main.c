@@ -20,6 +20,7 @@
  *     SET wifi_pass 1nnovation
  *     SET server_url https://onion-rpg.example.com
  *     SET api_key sk-...
+ *     SET min_rssi -75
  *     DUMP         (print current config)
  *     RESET        (erase NVS and reboot)
  *   Values are persisted to NVS; take effect on next reboot.
@@ -161,6 +162,7 @@ static void handle_serial_line(const char *line) {
         printf("challenge_id = %s\n", g_cfg.challenge_id);
         printf("wifi_ssid    = %s\n", g_cfg.wifi_ssid);
         printf("server_url   = %s\n", g_cfg.server_url);
+        printf("min_rssi     = %d dBm\n", g_cfg.min_rssi);
     } else if (strcmp(line, "RESET") == 0) {
         printf("Erasing NVS and rebooting...\n");
         nvs_flash_erase();

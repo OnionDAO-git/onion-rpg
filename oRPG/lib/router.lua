@@ -110,6 +110,7 @@ end
 function router.render(ctx)
     if #_stack == 0 then return end
     local top = _stack[#_stack]
+    ui.begin_frame()
     onion.clear_display()
     local ok, err = pcall(top.mod.render, ctx)
     if not ok then
@@ -118,6 +119,7 @@ function router.render(ctx)
         onion.display_lines({ 'RENDER ERROR', top.id, tostring(err):sub(1, 30) },
             6, 40, 18, { font = 'small', clear = false })
     end
+    ui.end_frame()
 end
 
 -- ── replace ──────────────────────────────────────────────────────────────

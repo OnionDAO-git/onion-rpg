@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import type { AuthUser } from '$lib/server/onion/session';
 
@@ -8,11 +9,12 @@
 	}>();
 
 	const navItems = [
-		{ href: '/admin',             label: 'Dashboard',   icon: '🧅' },
-		{ href: '/admin/beacons',     label: 'Beacons',     icon: '📡' },
-		{ href: '/admin/operatives',  label: 'Operatives',  icon: '🪪'  },
-		{ href: '/admin/storyteller', label: 'Storyteller', icon: '🤖' },
-		{ href: '/admin/rewards',     label: 'Rewards',     icon: '🪙'  },
+		{ href: '/admin',             label: 'Dashboard',   icon: '🧅', daoAdminOnly: false },
+		{ href: '/admin/beacons',     label: 'Beacons',     icon: '📡', daoAdminOnly: false },
+		{ href: '/admin/operatives',  label: 'Operatives',  icon: '🪪', daoAdminOnly: false },
+		{ href: '/admin/storyteller', label: 'Storyteller', icon: '🤖', daoAdminOnly: false },
+		{ href: '/admin/rewards',     label: 'Rewards',     icon: '🪙', daoAdminOnly: false },
+		{ href: '/admin/rpg-admins',  label: 'RPG Admins',  icon: '🛡️', daoAdminOnly: true },
 	] as const;
 
 	let pathname = $derived(page.url.pathname);
@@ -50,18 +52,20 @@
 		<nav>
 			<ul>
 				{#each navItems as item (item.href)}
-					<li>
-						<a href={item.href} class:active={isActive(item.href)}>
-							<span class="nav-icon" aria-hidden="true">{item.icon}</span>
-							{item.label}
-						</a>
-					</li>
+					{#if !item.daoAdminOnly || user.isAdmin}
+						<li>
+							<a href={resolve(item.href)} class:active={isActive(item.href)}>
+								<span class="nav-icon" aria-hidden="true">{item.icon}</span>
+								{item.label}
+							</a>
+						</li>
+					{/if}
 				{/each}
 			</ul>
 		</nav>
 
 		<div class="sidebar-footer">
-			<a class="guide-link" href="/">📖 Player Guide ↗</a>
+			<a class="guide-link" href={resolve('/')}>📖 Player Guide ↗</a>
 			<span class="deepdish-tag">DEEPDISH v&infin;</span>
 			<span class="version-value"><span class="version-label">VERSION</span> 2026-06-06</span>
 		</div>
@@ -94,8 +98,11 @@
 							Signed in{#if user.handle} as @{user.handle}{/if}
 						</div>
 						<div class="dropdown-meta">{user.email}</div>
+						<div class="dropdown-meta">
+							{user.isAdmin ? 'Onion DAO Admin' : user.isRpgAdmin ? 'RPG Admin' : 'Signed in'}
+						</div>
 						<div class="dropdown-sep"></div>
-						<a class="dropdown-item muted" href="/auth/logout" data-sveltekit-reload>Sign out</a>
+						<a class="dropdown-item muted" href={resolve('/auth/logout')} data-sveltekit-reload>Sign out</a>
 					</div>
 				{/if}
 			</div>

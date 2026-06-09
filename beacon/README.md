@@ -94,6 +94,7 @@ idf.py -p /dev/cu.usbmodemXXX flash
     --port /dev/cu.usbmodemXXX \
     --wifi-ssid "CIC Guest" \
     --wifi-pass "1nnovation" \
+    --min-rssi -75 \
     --server-url "https://onion-rpg.example.com" \
     --api-key "sk-..."
 ```
@@ -123,6 +124,7 @@ SET wifi_ssid CIC Guest
 SET wifi_pass 1nnovation
 SET server_url https://onion-rpg.example.com
 SET api_key sk-...
+SET min_rssi -75
 DUMP
 RESET
 ```
@@ -142,8 +144,9 @@ Badge (ESP32-S3)                    Beacon (ESP32-C3)           Game Server
                     <── ESP-NOW ──  unicast response frames
 ```
 
-1. **BEACON_HELLO** — broadcast every 5 s so badges can discover the beacon
-   and know which challenge it hosts. Body: `{"b":"b-ketchup-01","c":"0.1","m":"AA:BB:CC:DD:EE:FF"}`.
+1. **BEACON_HELLO** — broadcast every 5 s so badges can discover the beacon,
+   know which challenge it hosts, and decide whether it is close enough by RSSI.
+   Body: `{"b":"b-ketchup-01","c":"0.1","m":"AA:BB:CC:DD:EE:FF","r":-75,"l":"Hot dog stand"}`.
 
 2. **Request relay** — the badge sends one or more ESP-NOW frames (8-byte
    header + JSON body, max 240 bytes each). The beacon reassembles chunked
@@ -210,8 +213,8 @@ for typical deployments).
 ## Multi-beacon deployments
 
 Flash one firmware binary; differentiate beacons only via SPIFFS/NVS config
-(`beacon_id`, `challenge_id`). Each beacon registers with the server on boot
-and heartbeats every 30 s, keeping the `beacons` DB row live.
+(`beacon_id`, `challenge_id`, `min_rssi`). Each beacon registers with the
+server on boot and heartbeats every 30 s, keeping the `beacons` DB row live.
 
 Suggested naming convention:
 - `beacon_id`: `b-<challenge_safe_id>-<nn>` e.g. `b-ketchup-01`

@@ -40,7 +40,6 @@ function parseArgs(argv) {
 	if (!Number.isFinite(opts.maxBytes) || opts.maxBytes <= 0) {
 		throw new Error('--max-bytes must be a positive number');
 	}
-	if (!opts.perScreen && !opts.screens) opts.screens = 'all';
 	return opts;
 }
 
@@ -54,7 +53,7 @@ function printHelp() {
 Options:
   --per-screen       Write one bundle per challenge screen.
   --screen <id>      Bundle one screen id, e.g. 0.1 or 0_1.
-  --screens <list>   Comma-separated ids, or "all". Default: all.
+  --screens <list>   Comma-separated ids, or "all". Default: no legacy screens.
   --out <path>       Output file for single/all mode, directory for per-screen.
   --no-strip         Keep comments and blank lines.
   --max-bytes <n>    Badge size limit. Default: ${MAX_BADGE_SCRIPT_BYTES}.
@@ -68,6 +67,10 @@ async function luaFilesIn(dir) {
 		.filter((name) => name.endsWith('.lua'))
 		.sort()
 		.map((name) => path.join(orpgDir, dir, name));
+}
+
+function luaFilesNamed(names) {
+	return names.map((name) => path.join(orpgDir, 'lib', name));
 }
 
 function screenIdFromFile(file) {
@@ -152,6 +155,7 @@ async function writeBundle(outFile, bundle, opts) {
 async function main() {
 	const opts = parseArgs(process.argv.slice(2));
 	const libs = await luaFilesIn('lib');
+	const thinLibs = luaFilesNamed(['caps.lua', 'proto.lua', 'net.lua', 'ui.lua', 'identity.lua', 'hardware.lua']);
 	const screens = (await luaFilesIn('screens')).filter((file) => screenIdFromFile(file) !== '_template');
 	const entry = path.join(orpgDir, 'oRPG.lua');
 
@@ -167,7 +171,9 @@ async function main() {
 		}
 	} else {
 		let selectedScreens;
-		if (opts.screens === 'all') {
+		if (!opts.screens) {
+			selectedScreens = [];
+		} else if (opts.screens === 'all') {
 			selectedScreens = screens;
 		} else {
 			selectedScreens = opts.screens.split(',').map((id) => {
@@ -178,9 +184,10 @@ async function main() {
 			});
 		}
 
-		const bundle = await buildBundle({ files: { entry, modules: [...libs, ...selectedScreens] }, strip: opts.strip });
+		const modules = selectedScreens.length > 0 ? [...libs, ...selectedScreens] : thinLibs;
+		const bundle = await buildBundle({ files: { entry, modules }, strip: opts.strip });
 		const defaultName =
-			opts.screens === 'all'
+			!opts.screens || opts.screens === 'all'
 				? 'oRPG.bundle.lua'
 				: `oRPG-${selectedScreens.map(screenIdFromFile).join('-')}.bundle.lua`;
 		const outFile = opts.out.endsWith('.lua') ? opts.out : path.join(opts.out, defaultName);

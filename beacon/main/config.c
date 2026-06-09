@@ -16,6 +16,7 @@
  *   "server_url":      "https://onion-rpg.example.com",
  *   "api_key":         "sk-...",
  *   "espnow_channel":  0,
+ *   "min_rssi":        -75,
  *   "lat":             41.8827,
  *   "lon":             -87.6233
  * }
@@ -47,6 +48,7 @@ beacon_runtime_cfg_t g_cfg;
 #define NVS_SERVER    "server_url"
 #define NVS_API_KEY   "api_key"
 #define NVS_CHANNEL   "espnow_ch"
+#define NVS_MIN_RSSI  "min_rssi"
 #define NVS_LAT       "lat"
 #define NVS_LON       "lon"
 
@@ -70,7 +72,16 @@ static int nvs_get_int_or(const char *key, int fallback) {
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return fallback;
     int32_t v = fallback;
-    nvs_get_i32(h, key, &v);
+    esp_err_t err = nvs_get_i32(h, key, &v);
+    if (err != ESP_OK) {
+        char buf[16] = "";
+        size_t len = sizeof(buf);
+        if (nvs_get_str(h, key, buf, &len) == ESP_OK && buf[0] != '\0') {
+            char *end = NULL;
+            v = (int32_t)strtol(buf, &end, 10);
+            if (end == buf) v = fallback;
+        }
+    }
     nvs_close(h);
     return (int)v;
 }
@@ -145,6 +156,7 @@ static void load_spiffs_json(void) {
     apply_json_str   (root, "server_url",     g_cfg.server_url,    sizeof(g_cfg.server_url));
     apply_json_str   (root, "api_key",        g_cfg.api_key,       sizeof(g_cfg.api_key));
     apply_json_int   (root, "espnow_channel", &g_cfg.espnow_channel);
+    apply_json_int   (root, "min_rssi",       &g_cfg.min_rssi);
     apply_json_double(root, "lat",            &g_cfg.lat);
     apply_json_double(root, "lon",            &g_cfg.lon);
 
@@ -164,6 +176,7 @@ void config_load(void) {
     strlcpy(g_cfg.server_url,   BEACON_DEFAULT_SERVER_URL,   sizeof(g_cfg.server_url));
     strlcpy(g_cfg.api_key,      BEACON_DEFAULT_API_KEY,      sizeof(g_cfg.api_key));
     g_cfg.espnow_channel = BEACON_DEFAULT_ESPNOW_CHANNEL;
+    g_cfg.min_rssi = BEACON_DEFAULT_MIN_RSSI;
     g_cfg.lat = 0.0;
     g_cfg.lon = 0.0;
 
@@ -176,6 +189,7 @@ void config_load(void) {
     nvs_get_str_or(NVS_SERVER,    g_cfg.server_url,   sizeof(g_cfg.server_url),   g_cfg.server_url);
     nvs_get_str_or(NVS_API_KEY,   g_cfg.api_key,      sizeof(g_cfg.api_key),      g_cfg.api_key);
     g_cfg.espnow_channel = nvs_get_int_or(NVS_CHANNEL, g_cfg.espnow_channel);
+    g_cfg.min_rssi = nvs_get_int_or(NVS_MIN_RSSI, g_cfg.min_rssi);
     g_cfg.lat = nvs_get_double_or(NVS_LAT, g_cfg.lat);
     g_cfg.lon = nvs_get_double_or(NVS_LON, g_cfg.lon);
 
@@ -202,5 +216,6 @@ void config_dump(void) {
     ESP_LOGI(TAG, "wifi_ssid     = %s", g_cfg.wifi_ssid[0] ? g_cfg.wifi_ssid : "(not set)");
     ESP_LOGI(TAG, "server_url    = %s", g_cfg.server_url);
     ESP_LOGI(TAG, "espnow_ch     = %d", g_cfg.espnow_channel);
+    ESP_LOGI(TAG, "min_rssi      = %d dBm", g_cfg.min_rssi);
     ESP_LOGI(TAG, "lat/lon       = %.6f / %.6f", g_cfg.lat, g_cfg.lon);
 }

@@ -23,7 +23,7 @@
 					{#if user.avatarUrl}<img class="who-avatar" src={user.avatarUrl} alt="" />{/if}
 					{user.name}
 				</span>
-				{#if user.isAdmin}
+				{#if user.canAdminRpg}
 					<a class="nav-link" href={resolve('/admin')}>Ops Console</a>
 				{/if}
 				<a class="nav-link muted" href={resolve('/auth/logout')} data-sveltekit-reload>Sign out</a>

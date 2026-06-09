@@ -8,10 +8,7 @@
 -- specific choices and a custom intro screen before handing off to the
 -- archetype. No special hardware primitives needed for NPC type.
 --
--- Capability shim usage:
---   caps.http  → send NPC_DIALOGUE_TURN directly to server (no beacon relay)
---   (baseline) → route through beacon relay via ESP-NOW as normal
--- The NPC archetype handles both paths transparently via net.request().
+-- Comms route through the ESP-NOW beacon relay via net.request().
 
 local archetypes = require('lib.archetypes')
 local ui         = require('lib.ui')

@@ -1,4 +1,5 @@
 import type { Handle } from '@sveltejs/kit';
+import { applyRpgAdminRole } from '$lib/server/admin/rpg-admins';
 import { fetchSessionUser } from '$lib/server/onion/session';
 
 /**
@@ -12,6 +13,7 @@ import { fetchSessionUser } from '$lib/server/onion/session';
  * separate (per-endpoint bearer key in `$lib/server/api/auth.ts`).
  */
 export const handle: Handle = async ({ event, resolve }) => {
-	event.locals.user = await fetchSessionUser(event.cookies.get('session'));
+	const user = await fetchSessionUser(event.cookies.get('session'));
+	event.locals.user = user ? await applyRpgAdminRole(user) : null;
 	return resolve(event);
 };

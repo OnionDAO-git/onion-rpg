@@ -19,6 +19,7 @@ SERVER_URL=""
 API_KEY=""
 BEACON_ID=""
 LANDMARK=""
+MIN_RSSI=""
 BAUD=115200
 
 while [[ $# -gt 0 ]]; do
@@ -31,6 +32,7 @@ while [[ $# -gt 0 ]]; do
         --api-key)      API_KEY="$2";      shift 2 ;;
         --beacon-id)    BEACON_ID="$2";    shift 2 ;;
         --landmark)     LANDMARK="$2";     shift 2 ;;
+        --min-rssi)     MIN_RSSI="$2";     shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
@@ -64,6 +66,7 @@ echo "Provisioning beacon at $PORT (baud $BAUD)"
 [[ -n "$SERVER_URL"   ]] && send_cmd "SET server_url $SERVER_URL"
 [[ -n "$API_KEY"      ]] && send_cmd "SET api_key $API_KEY"
 [[ -n "$LANDMARK"     ]] && send_cmd "SET landmark $LANDMARK"
+[[ -n "$MIN_RSSI"     ]] && send_cmd "SET min_rssi $MIN_RSSI"
 
 send_cmd "DUMP"
 read -r -p "Reboot beacon now? [y/N] " yn

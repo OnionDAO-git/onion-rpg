@@ -6,7 +6,8 @@
  * know which challengeId it hosts.
  *
  * Body schema (terse JSON, matches BeaconHelloBody in protocol.ts):
- *   { "b": "<beaconId>", "c": "<challengeId>|null", "m": "<mac hex>" }
+ *   { "b": "<beaconId>", "c": "<challengeId>|null", "m": "<mac hex>",
+ *     "r": <min RSSI dBm>, "l": "<landmark>" }
  *
  * The hello task also sends an HTTP registration call to the server
  * (POST /api/relay with a synthetic BEACON_HELLO message) so the server can

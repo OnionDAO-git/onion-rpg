@@ -66,25 +66,34 @@ Lua, published to the Onion OS Lua Script Registry. Runs on the ESP32-S3
 badge under Onion OS.
 
 - `oRPG.lua` — entry point + main loop. Discovers beacons via BEACON_HELLO,
-  loads the matching screen module.
+  submits signed/unsigned `BADGE_MOVE` events, and renders server-sent
+  `EINK_FRAME` operation streams.
 - `oRPG/lib/net.lua` — ESP-NOW request/response helper (frames messages per
   the wire protocol, sends via `onion.espnow_send`, reassembles chunked
   replies).
+- `oRPG/lib/identity.lua` — hardware id, linked Onion id, address discovery,
+  and optional move signing when firmware exposes a signing primitive.
+- `oRPG/lib/ui.lua` — native e-ink primitive renderer for compact server
+  operation streams.
+- `oRPG/lib/hardware.lua` — feature-detected GPIO, Sound mic/speaker, and
+  CC1101 sub-GHz bridge. Server frames may request IO via an `io` directive;
+  the badge executes it and sends the result as a `BADGE_MOVE` with `k='io'`.
 - `oRPG/lib/caps.lua` — capability shim: detects firmware-extension
   primitives at runtime and uses them when present, falls back to
   ESP-NOW + beacon relay when absent. The game is fully playable on
   today's firmware (ESP-NOW only).
-- `oRPG/screens/<challengeId>.lua` — one screen per challenge. Each screen
-  returns `{ begin(ctx), update(ctx,dt), render(ctx) }`.
+- `oRPG/screens/<challengeId>.lua` — legacy local screens kept for fallback
+  bundles only. The standard badge bundle does not load them.
 
 Capability shim logic:
 
 ```lua
-caps.http   = type(onion.http_request)  == 'function'  -- direct HTTPS (no beacon needed)
-caps.seRng  = type(onion.se_rng)        == 'function'  -- tamper-proof combat rolls
-caps.seSign = type(onion.se_sign)       == 'function'  -- Ed25519 attestation
-caps.voice  = type(onion.voice_capture) == 'function'  -- on-badge mic capture
-caps.subghz = type(onion.subghz_tx)     == 'function'  -- sub-GHz mini-events
+caps.sign   = type(onion.sign_message) == 'function'
+           or type(onion.wallet_sign)  == 'function'
+           or type(onion.se_sign)      == 'function'
+caps.secRng = type(onion.secure_random) == 'function'
+caps.voice  = type(onion.sound_mic_begin) == 'function'
+caps.subghz = type(onion.subghz_begin) == 'function'
 ```
 
 ### 3. ESP32-C3 beacons (`beacon/`)

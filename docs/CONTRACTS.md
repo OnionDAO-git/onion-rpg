@@ -80,9 +80,11 @@ Reassemble by collecting `total` chunks for a `msgId` in `seq` order, then
 
 | Hex | Name | Dir | Body shape |
 |---|---|---|---|
-| 0x01 | BEACON_HELLO | beacon→badge | `{b,c,m}` (beaconId, challengeId, mac) |
+| 0x01 | BEACON_HELLO | beacon→badge | `{b,c,m,r?,l?}` (beaconId, challengeId, mac, min RSSI dBm, landmark) |
 | 0x02 | OPERATIVE_IDENTIFY | badge→srv | `{h,o?}` (hardwareId, onionId) |
 | 0x03 | IDENTIFY_ACK | srv→badge | progression snapshot |
+| 0x04 | BADGE_MOVE | badge→srv | `{h,o?,a?,b?,k,p?,q?,t?,caps?,sig?}` generic move/proximity event |
+| 0x05 | EINK_FRAME | srv→badge | `{v,ops,state?,pollMs?,io?}` compact e-ink operation stream + optional IO request |
 | 0x10 | CHALLENGE_BEGIN | badge→srv | `{c,h}` |
 | 0x11 | CHALLENGE_INTRO | srv→badge | intro content |
 | 0x12 | CHALLENGE_RESULT | srv→badge | verdict |
@@ -166,31 +168,49 @@ DAO API), `inventory` (catalogId), `gauge` (win-bar bump).
 
 ## 6. oRPG Lua conventions (`oRPG/`)
 
-**Loader.** `oRPG.lua` is the entry point + main loop. On a BEACON_HELLO it
-reads the advertised `challengeId`, loads `oRPG/screens/<challengeId>.lua`, and
-drives it. Screens are loaded lazily via `require('screens.'..id)` (or a
-registry table the loader builds from the screens dir).
+**Thin loader.** `oRPG.lua` is the entry point + main loop. On a BEACON_HELLO
+whose RSSI meets the advertised `r` threshold, it sends a `BADGE_MOVE` with
+hardware id, linked Onion id, discovered addresses, beacon identity, runtime
+capabilities, and an optional signature. The server owns all adventure and
+challenge state and replies with `EINK_FRAME`.
 
-**Screen module interface.** `screens/<id>.lua` returns a table:
+**Move submission (`oRPG/lib/identity.lua`).** The badge maintains address
+metadata and signs the canonical move envelope when firmware exposes a signing
+primitive. Current shipped firmware does not expose arbitrary message signing,
+so unsigned moves remain valid and server-authoritative.
 
-```lua
-return {
-  -- called once when the screen is entered; receives a ctx with net + ui helpers
-  begin = function(ctx) end,
-  -- called each loop tick; return 'done' to exit, or nil to keep running
-  update = function(ctx, dt) end,
-  -- draw the current frame to the e-paper display (264x176 B/W)
-  render = function(ctx) end,
+**Server frame renderer (`oRPG/lib/ui.lua`).** The badge does not lay out game
+screens. It maps compact server ops (`clear`, `text`, `lines`, `line`, `rect`)
+to native e-paper primitives and commits once per frame.
+
+**Submodule IO (`oRPG/lib/hardware.lua`).** `EINK_FRAME` may include an optional
+`io` directive. After rendering, the badge executes supported requests and
+submits `BADGE_MOVE { k:'io', p:{...results...} }`.
+
+```ts
+io?: {
+  gpio?: { pins?: Record<string, number> },
+  mic?: { ms?: number, sampleRate?: number },
+  speaker?: { toneHz?: number, ms?: number, sound?: string },
+  subghzTx?: { hex?: string, payload?: string, freq?: number, modulation?: string },
+  subghzRx?: { timeoutMs?: number, freq?: number, modulation?: string }
 }
 ```
 
-**ESP-NOW client helper (`oRPG/lib/net.lua`).** Screens call a request/response
-helper that frames a message per §3, sends via `onion.espnow_send`, and
-reassembles the reply via `onion.espnow_receive` (loop until all chunks):
+GPIO is feature-detected (`gpio_read`, `digital_read`, or `pin_read`) and may
+use a badge-local `ORPG_GPIO_PINS` table if the server omits pins. Mic uses
+`sound_mic_level` when available, falling back to `sound_mic_read` RMS/peak
+calculation. Speaker and sub-GHz are mutually respectful of module lifecycle:
+the badge opens the module, performs the requested operation, and closes it.
+
+**ESP-NOW client helper (`oRPG/lib/net.lua`).** The runtime frames a message per
+§3, sends via `onion.espnow_send`, and reassembles the reply via
+`onion.espnow_receive`:
 
 ```lua
 -- returns decoded reply body (table) or nil,err
-local body, err = ctx.net.request(MsgType.CHALLENGE_BEGIN, { c = id, h = hwid })
+local frame, err = net.request(MsgType.BADGE_MOVE, move)
+if frame then ui.render_frame(frame) end
 ```
 
 **Capability shim (`oRPG/lib/caps.lua`).** Detect each shipped Onion OS
@@ -209,7 +229,10 @@ local caps = {
   speaker = type(onion.sound_speaker_begin) == 'function',                                   -- Sound-module speaker
   subghz  = type(onion.subghz_begin) == 'function' and type(onion.subghz_transmit) == 'function',  -- CC1101 sub-GHz
 }
-caps.seAttest = false  -- ALWAYS false: no Lua signing primitive exists on the badge
+caps.sign = type(onion.sign_message) == 'function'
+    or type(onion.wallet_sign) == 'function'
+    or type(onion.se_sign) == 'function'
+caps.seAttest = caps.sign -- legacy alias; game logic is still server-owned
 ```
 
 - Combat is **SERVER-AUTHORITATIVE** and rolls are **NOT badge-signed**. The

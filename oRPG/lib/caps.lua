@@ -1,7 +1,7 @@
 -- oRPG/lib/caps.lua
 -- Capability shim: detects which optional Onion OS primitives this badge has and
--- selects the richer code path when present, else falls back to the ESP-NOW +
--- beacon relay path. Every cap defaults to false on a bare badge.
+-- selects the richer code path when present. Game/server traffic always stays
+-- on the ESP-NOW + beacon relay path so the badge never carries server keys.
 --
 -- These names track the REAL Onion OS Lua API (see the badge README "Scripts
 -- receive a small global `onion` table" + "Swappable modules"). Earlier drafts
@@ -11,12 +11,12 @@
 --
 -- Usage:
 --   local caps = require('lib.caps')
---   if caps.http then ... else ... end
+--   if caps.subghz then ... else ... end
 
 local caps = {
-    -- Direct HTTPS to the game server, bypassing the beacon relay entirely.
-    -- onion.http_get(url, opts) / onion.http_post(url, body, opts) -> {status, body}
-    http    = type(onion.http_get) == 'function' and type(onion.http_post) == 'function',
+    -- Direct game-server HTTPS is intentionally disabled. The beacon/gateway
+    -- owns server authentication and forwards badge frames to /api/relay.
+    http    = false,
 
     -- Badge's shared MQTT bridge (onion.mqtt_publish/subscribe/receive).
     mqtt    = type(onion.mqtt_publish) == 'function' and type(onion.mqtt_subscribe) == 'function',
@@ -42,14 +42,16 @@ local caps = {
     subghz  = type(onion.subghz_begin) == 'function' and type(onion.subghz_transmit) == 'function',
 }
 
--- IMPORTANT: there is NO Lua signing primitive on the badge. The ATECC608B
--- cannot do Ed25519, and the badge's software Solana key is not exposed to
--- scripts, so a badge-signed ("attested") combat roll is not achievable from
--- Lua. Combat tamper-resistance comes from the server being authoritative over
--- rolls (it generates and records them); secure_random is an entropy
--- convenience, not a signature. Kept as an explicit false so callers that
--- branch on it degrade cleanly.
-caps.seAttest = false
+-- Optional future signing boundary. Current shipped Onion OS docs say arbitrary
+-- Lua message signing is not exposed, but keep this feature-detected so the
+-- thin client can submit signed moves on firmware that does expose it.
+caps.sign = type(onion.sign_message) == 'function'
+    or type(onion.wallet_sign) == 'function'
+    or type(onion.se_sign) == 'function'
+
+-- Back-compat alias used by older screens. It means "can attest a move", not
+-- "combat is badge-authoritative"; combat/game logic remains server-owned.
+caps.seAttest = caps.sign
 
 -- Log active capabilities on first load (visible in the Onion OS log pane).
 local active = {}

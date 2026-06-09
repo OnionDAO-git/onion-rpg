@@ -13,6 +13,25 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- ─────────────────────────────────────────────────────────────────────────
+-- rpg_admin_grants: local ONION RPG admin role assignments.
+-- Onion DAO-wide admins always have RPG admin powers through the shared
+-- session response; rows here grant the same RPG-only access to non-DAO admins.
+-- ─────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS rpg_admin_grants (
+	user_id             TEXT PRIMARY KEY,
+	email               TEXT,
+	name                TEXT,
+	handle              TEXT,
+	avatar_url          TEXT,
+	granted_by_user_id  TEXT NOT NULL,
+	granted_by_email    TEXT,
+	granted_by_name     TEXT,
+	created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+	updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS rpg_admin_grants_handle_idx ON rpg_admin_grants (handle);
+
+-- ─────────────────────────────────────────────────────────────────────────
 -- operatives: a player. Links the badge identity to the Onion DAO account.
 -- ─────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS operatives (

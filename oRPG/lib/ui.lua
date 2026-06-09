@@ -26,18 +26,49 @@ local ui = {}
 
 -- ── Display constants ─────────────────────────────────────────────────────
 
-ui.W = 264
-ui.H = 176
+local _display_size = nil
+if type(onion.display_size) == 'function' then
+    local ok, size = pcall(onion.display_size)
+    if ok and type(size) == 'table' then _display_size = size end
+end
+
+ui.W = (_display_size and _display_size.width) or 264
+ui.H = (_display_size and _display_size.height) or 176
 
 -- approximate character widths per font at the badge's fixed-pitch font sizes
-ui.FONT_SMALL_W  = 6   -- ~6px per char, ~43 chars per row
-ui.FONT_BOLD_W   = 8   -- ~8px per char, ~33 chars per row
-ui.FONT_LARGE_W  = 12  -- ~12px per char, ~22 chars per row
+ui.FONT_SMALL_W  = 10  -- FreeMono9pt7b, ~25 chars per row
+ui.FONT_BOLD_W   = 11  -- FreeMonoBold9pt7b
+ui.FONT_LARGE_W  = 19  -- FreeMonoBold18pt7b
 
 -- line heights (pixels between baselines)
-ui.LH_SMALL  = 14
-ui.LH_BOLD   = 16
-ui.LH_LARGE  = 24
+ui.LH_SMALL  = 18
+ui.LH_BOLD   = 20
+ui.LH_LARGE  = 34
+
+local _frame_depth = 0
+
+function ui.begin_frame()
+    _frame_depth = _frame_depth + 1
+    if _frame_depth == 1 and type(onion.display_begin) == 'function' then
+        onion.display_begin()
+    end
+end
+
+function ui.end_frame()
+    if _frame_depth <= 0 then return end
+    _frame_depth = _frame_depth - 1
+    if _frame_depth == 0 and type(onion.display_commit) == 'function' then
+        onion.display_commit()
+    end
+end
+
+function ui.frame(fn)
+    ui.begin_frame()
+    local ok, result = pcall(fn)
+    ui.end_frame()
+    if not ok then error(result) end
+    return result
+end
 
 -- ── Primitives ────────────────────────────────────────────────────────────
 
@@ -369,6 +400,70 @@ function ui.confirm(question, hint)
     ui.divider(ui.H - 20)
     local hx = math.max(4, math.floor((ui.W - #hint * ui.FONT_SMALL_W) / 2))
     onion.display_text(hint, hx, ui.H - 14, { font = 'small', clear = false })
+end
+
+-- ── Server frame renderer ────────────────────────────────────────────────
+-- Draw compact e-ink instructions sent by the server as EINK_FRAME bodies.
+-- The server owns layout/game state; the badge only maps ops to native display
+-- primitives and commits once per frame.
+
+local function draw_op(op)
+    if type(op) ~= 'table' then return end
+    local k = op.k or op.op
+
+    if k == 'clear' then
+        onion.clear_display()
+    elseif k == 'text' then
+        onion.display_text(
+            tostring(op.t or ''),
+            op.x or 0,
+            op.y or 0,
+            { font = op.f or 'small', clear = false }
+        )
+    elseif k == 'lines' then
+        ui.body_text(
+            op.lines or {},
+            op.x or 0,
+            op.y or 0,
+            op.lh or ui.LH_SMALL,
+            op.f or 'small',
+            op.w,
+            op.max
+        )
+    elseif k == 'line' then
+        onion.display_line(
+            op.x1 or 0,
+            op.y1 or 0,
+            op.x2 or 0,
+            op.y2 or 0,
+            { clear = false }
+        )
+    elseif k == 'rect' then
+        onion.display_rect(
+            op.x or 0,
+            op.y or 0,
+            op.w or 1,
+            op.h or 1,
+            { clear = false, fill = op.fill == true }
+        )
+    end
+end
+
+function ui.render_frame(frame)
+    if type(frame) ~= 'table' then return false end
+    local ops = frame.ops
+    if type(ops) ~= 'table' then return false end
+
+    ui.begin_frame()
+    for _, op in ipairs(ops) do
+        if type(op) == 'table' and (op.k or op.op) == 'commit' then
+            -- no-op: commit is implicit at end_frame()
+        else
+            draw_op(op)
+        end
+    end
+    ui.end_frame()
+    return true
 end
 
 return ui

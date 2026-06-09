@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -31,16 +32,33 @@ static void build_hello_json(char *buf, size_t buf_sz) {
     snprintf(mac_str, sizeof(mac_str),
              "%02X:%02X:%02X:%02X:%02X:%02X",
              m[0], m[1], m[2], m[3], m[4], m[5]);
+    char landmark[49];
+    snprintf(landmark, sizeof(landmark), "%s", g_cfg.landmark);
 
-    if (g_cfg.challenge_id[0]) {
-        snprintf(buf, buf_sz,
-                 "{\"b\":\"%s\",\"c\":\"%s\",\"m\":\"%s\"}",
-                 g_cfg.beacon_id, g_cfg.challenge_id, mac_str);
-    } else {
-        snprintf(buf, buf_sz,
-                 "{\"b\":\"%s\",\"c\":null,\"m\":\"%s\"}",
-                 g_cfg.beacon_id, mac_str);
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        snprintf(buf, buf_sz, "{}");
+        return;
     }
+
+    cJSON_AddStringToObject(root, "b", g_cfg.beacon_id);
+    if (g_cfg.challenge_id[0]) {
+        cJSON_AddStringToObject(root, "c", g_cfg.challenge_id);
+    } else {
+        cJSON_AddNullToObject(root, "c");
+    }
+    cJSON_AddStringToObject(root, "m", mac_str);
+    cJSON_AddNumberToObject(root, "r", g_cfg.min_rssi);
+    cJSON_AddStringToObject(root, "l", landmark);
+
+    char *printed = cJSON_PrintUnformatted(root);
+    if (printed) {
+        snprintf(buf, buf_sz, "%s", printed);
+        cJSON_free(printed);
+    } else {
+        snprintf(buf, buf_sz, "{}");
+    }
+    cJSON_Delete(root);
 }
 
 /* ── Notify server of our presence (once per interval) ───────────────── */
@@ -80,7 +98,7 @@ static void register_with_server(const char *hello_json) {
 
 static void hello_task(void *arg) {
     (void)arg;
-    char hello_json[320];
+    char hello_json[512];
 
     /* Server registration fires every 30 s (6 x 5 s hello intervals). */
     const uint32_t SERVER_REG_INTERVAL_MS = 30000;
@@ -90,17 +108,22 @@ static void hello_task(void *arg) {
         build_hello_json(hello_json, sizeof(hello_json));
 
         /* Encode + broadcast BEACON_HELLO burst. */
-        uint8_t frame_buf[ONION_ESPNOW_MAX_FRAME];
-        size_t  frame_size[1];
+        uint8_t frame_buf[4][ONION_ESPNOW_MAX_FRAME];
+        size_t  frame_size[4];
         int n = onion_encode_chunks(
             MSG_BEACON_HELLO, 0,
             hello_json, strlen(hello_json),
-            (uint8_t (*)[ONION_ESPNOW_MAX_FRAME])&frame_buf,
-            frame_size, 1);
+            frame_buf,
+            frame_size, 4);
 
         if (n > 0) {
             for (int burst = 0; burst < BEACON_HELLO_BURST; burst++) {
-                espnow_tx_broadcast(frame_buf, frame_size[0]);
+                for (int i = 0; i < n; i++) {
+                    espnow_tx_broadcast(frame_buf[i], frame_size[i]);
+                    if (i < n - 1) {
+                        vTaskDelay(pdMS_TO_TICKS(20));
+                    }
+                }
                 if (burst < BEACON_HELLO_BURST - 1) {
                     vTaskDelay(pdMS_TO_TICKS(50));
                 }

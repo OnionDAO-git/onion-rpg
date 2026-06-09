@@ -20,6 +20,8 @@ export interface AuthUser {
 	avatarUrl: string | null;
 	isAdmin: boolean;
 	isStaff: boolean;
+	isRpgAdmin: boolean;
+	canAdminRpg: boolean;
 }
 
 /**
@@ -36,7 +38,12 @@ export async function fetchSessionUser(sessionToken: string | undefined): Promis
 		});
 		if (!res.ok) return null;
 		const data = (await res.json()) as { user: AuthUser | null };
-		return data.user ?? null;
+		if (!data.user) return null;
+		return {
+			...data.user,
+			isRpgAdmin: false,
+			canAdminRpg: data.user.isAdmin
+		};
 	} catch {
 		return null;
 	}

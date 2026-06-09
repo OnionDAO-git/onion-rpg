@@ -11,14 +11,13 @@
 --   done         → press SELECT to exit
 --
 -- Capability notes:
---   Comms: uses caps.http (direct HTTPS) when available, else relay via beacon.
+--   Comms route through the ESP-NOW beacon relay.
 --   No sub-GHz or SE primitives needed for this NPC challenge type.
 --   All AI judging is server-side; badge just sends/receives JSON turns.
 
 local ui       = require('lib.ui')
 local net      = require('lib.net')
 local proto    = require('lib.proto')
-local caps     = require('lib.caps')
 local archetypes = require('lib.archetypes')
 
 local MT = proto.MsgType

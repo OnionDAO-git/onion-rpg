@@ -27,6 +27,8 @@ proto.MsgType = {
     BEACON_HELLO         = 0x01,
     OPERATIVE_IDENTIFY   = 0x02,
     IDENTIFY_ACK         = 0x03,
+    BADGE_MOVE           = 0x04,
+    EINK_FRAME           = 0x05,
 
     CHALLENGE_BEGIN      = 0x10,
     CHALLENGE_INTRO      = 0x11,

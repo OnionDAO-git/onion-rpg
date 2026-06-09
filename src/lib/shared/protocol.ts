@@ -54,6 +54,10 @@ export enum MsgType {
 	OPERATIVE_IDENTIFY = 0x02,
 	/** Server -> badge: identify ack + current progression snapshot. */
 	IDENTIFY_ACK = 0x03,
+	/** Badge -> server: generic signed input/proximity event for server-owned flow. */
+	BADGE_MOVE = 0x04,
+	/** Server -> badge: compact e-ink render instructions. */
+	EINK_FRAME = 0x05,
 
 	// ── challenge lifecycle ──
 	/** Badge -> server: begin the challenge this beacon hosts. */
@@ -254,6 +258,10 @@ export interface BeaconHelloBody {
 	c: string | null;
 	/** beacon ESP-NOW mac (so badge can unicast back) */
 	m: string;
+	/** minimum RSSI in dBm required before oRPG treats the beacon as nearby */
+	r?: number;
+	/** optional physical landmark label */
+	l?: string;
 }
 
 export interface OperativeIdentifyBody {
@@ -261,6 +269,116 @@ export interface OperativeIdentifyBody {
 	h: string;
 	/** onion id, if known */
 	o?: number;
+}
+
+export interface BadgeAddressBook {
+	/** Primary on-chain address, when exposed by firmware. */
+	wallet?: string;
+	/** Named addresses or account ids exposed by firmware/portal. */
+	[key: string]: string | undefined;
+}
+
+export interface BadgeSignatureBody {
+	/** Signing primitive / algorithm, e.g. ed25519, solana, firmware. */
+	alg: string;
+	/** Public key or address that verifies this signature, if known. */
+	key?: string;
+	/** Hex/base64 signature, depending on firmware primitive. */
+	sig: string;
+	/** Canonical message bytes encoded as UTF-8 text. */
+	msg: string;
+}
+
+export interface BadgeMoveBody {
+	/** hardware id */
+	h: string;
+	/** onion id, if known */
+	o?: number;
+	/** Badge-known addresses/accounts. */
+	a?: BadgeAddressBook;
+	/** nearby beacon context */
+	b?: {
+		id?: string;
+		challengeId?: string | null;
+		mac?: string;
+		rssi?: number;
+		minRssi?: number;
+	};
+	/** move kind: beacon_ping, button, heartbeat, voice_ref, subghz, etc. */
+	k: string;
+	/** move payload; shape is owned by the server runtime. */
+	p?: unknown;
+	/** badge-local monotonic sequence for replay detection/ordering. */
+	q?: number;
+	/** badge timestamp in ms, best effort. */
+	t?: number;
+	/** advertised badge runtime capabilities. */
+	caps?: Record<string, boolean>;
+	/** optional signature over the canonical move envelope. */
+	sig?: BadgeSignatureBody;
+}
+
+export type EinkFont = 'small' | 'bold' | 'large';
+
+export type EinkOp =
+	| { k: 'clear' }
+	| { k: 'text'; x: number; y: number; t: string; f?: EinkFont }
+	| { k: 'lines'; x: number; y: number; lh?: number; f?: EinkFont; lines: string[] }
+	| { k: 'line'; x1: number; y1: number; x2: number; y2: number }
+	| { k: 'rect'; x: number; y: number; w: number; h: number; fill?: boolean }
+	| { k: 'commit' };
+
+export interface EinkFrameBody {
+	/** renderer schema version */
+	v: 1;
+	/** frame id for de-dupe/debug */
+	id?: string;
+	/** display width/height targeted by the server renderer */
+	w?: number;
+	h?: number;
+	/** operation stream, intentionally compact for ESP-NOW chunking */
+	ops: EinkOp[];
+	/** optional server-side state token echoed by later moves */
+	state?: string;
+	/** optional next poll/heartbeat interval */
+	pollMs?: number;
+	/** optional badge submodule IO request performed after render */
+	io?: BadgeIoRequest;
+}
+
+export interface BadgeIoRequest {
+	gpio?: {
+		/** Label -> pin number map; badge may also use ORPG_GPIO_PINS. */
+		pins?: Record<string, number>;
+	};
+	mic?: {
+		ms?: number;
+		sampleRate?: number;
+	};
+	speaker?: {
+		toneHz?: number;
+		freq?: number;
+		ms?: number;
+		durationMs?: number;
+		sound?: string;
+		options?: Record<string, unknown>;
+	};
+	subghzTx?: {
+		payload?: string;
+		hex?: string;
+		freq?: number;
+		freqMhz?: number;
+		frequency?: number;
+		modulation?: string;
+	};
+	subghzRx?: {
+		timeoutMs?: number;
+		timeout_ms?: number;
+		freq?: number;
+		freqMhz?: number;
+		frequency?: number;
+		modulation?: string;
+	};
 }
 
 export interface ChallengeBeginBody {

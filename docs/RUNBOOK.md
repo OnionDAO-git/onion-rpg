@@ -104,6 +104,7 @@ the SPIFFS config image in one step:
     --port      /dev/cu.usbmodemXXX \
     --wifi-ssid "<event-network>"  \
     --wifi-pass "<event-password>" \
+    --min-rssi -75 \
     --server-url https://rpg.oniondao.dev \
     --api-key   "$BEACON_API_KEY"
 ```
@@ -133,6 +134,7 @@ Or open a 115200-baud serial terminal and type:
 SET wifi_ssid NewNetwork
 SET wifi_pass NewPass
 SET server_url https://rpg.oniondao.dev
+SET min_rssi -75
 RESET
 ```
 
@@ -143,6 +145,9 @@ After power-on the beacon will:
 1. Connect to WiFi.
 2. Start broadcasting `BEACON_HELLO` every 5 s over ESP-NOW.
 3. Register itself with the server (heartbeat every 30 s).
+
+Badges only surface the challenge once the received RSSI is at or above the
+advertised `min_rssi`.
 
 Check the `beacons` table:
 

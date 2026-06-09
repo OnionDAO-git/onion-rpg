@@ -36,10 +36,12 @@ end
 
 -- Generic "busy" wait screen used while awaiting a server reply.
 local function draw_waiting(label)
+    ui.begin_frame()
     onion.clear_display()
     ui.title('Please wait...', 70)
     local lx = math.max(4, math.floor((ui.W - #label * ui.FONT_SMALL_W) / 2))
     onion.display_text(label, lx, 96, { font = 'small', clear = false })
+    ui.end_frame()
 end
 
 -- ── COMBAT archetype ──────────────────────────────────────────────────────
@@ -192,8 +194,7 @@ function archetypes.dialogue(challenge_id, opts)
     -- Capture a short window of audio via the Sound-module PDM mic and return a
     -- rough energy summary { rms, peak } so the server knows the operative
     -- actually spoke. The badge has no on-device STT, so we don't return a
-    -- transcript here; raw-PCM upload to a server STT endpoint is a TODO that
-    -- depends on a voice-ingest route + the badge being on WiFi (caps.http).
+    -- transcript here; raw-PCM upload is handled by the beacon/server path.
     local function capture_voice_energy(ms)
         if not caps.voice then return nil end
         local ok = onion.sound_mic_begin({ sample_rate = 16000 })

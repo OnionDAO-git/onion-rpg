@@ -56,6 +56,11 @@ extern "C" {
 #define BEACON_DEFAULT_ESPNOW_CHANNEL 0
 #endif
 
+/* RSSI threshold (dBm) badges use to decide "close enough" to surface oRPG. */
+#ifndef BEACON_DEFAULT_MIN_RSSI
+#define BEACON_DEFAULT_MIN_RSSI       -75
+#endif
+
 /* Interval (ms) between BEACON_HELLO broadcast bursts. */
 #ifndef BEACON_HELLO_INTERVAL_MS
 #define BEACON_HELLO_INTERVAL_MS    5000
@@ -80,6 +85,7 @@ typedef struct {
     char     server_url[BEACON_STR_MAX];      /* https://... (no trailing slash) */
     char     api_key[BEACON_STR_MAX];         /* Bearer BEACON_API_KEY */
     int      espnow_channel;                  /* 0 = auto */
+    int      min_rssi;                        /* badge proximity threshold, dBm */
     uint8_t  espnow_mac[6];                   /* filled in at runtime */
     /* latitude / longitude for the DB beacon record (optional, 0.0 = unset) */
     double   lat;

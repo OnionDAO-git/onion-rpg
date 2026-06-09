@@ -2,438 +2,19 @@
 -- Upload this single file to the Onion OS Lua Script Registry.
 package.preload = package.preload or {}
 
-package.preload["lib.archetypes"] = function(...)
-local proto = require('lib.proto')
-local net   = require('lib.net')
-local ui    = require('lib.ui')
-local caps  = require('lib.caps')
-local MT = proto.MsgType
-local archetypes = {}
-local function edge(buttons, last)
-    for _, b in ipairs({'select','cancel','up','down','left','right'}) do
-        if buttons[b] and not (last and last[b]) then
-            return b
-        end
-    end
-    return nil
-end
-local function draw_waiting(label)
-    onion.clear_display()
-    ui.title('Please wait...', 70)
-    local lx = math.max(4, math.floor((ui.W - #label * ui.FONT_SMALL_W) / 2))
-    onion.display_text(label, lx, 96, { font = 'small', clear = false })
-end
-function archetypes.combat(challenge_id, opts)
-    opts = opts or {}
-    local state = {
-        phase       = 'intro',  -- intro | active | waiting | done
-        session     = nil,      -- CombatRollResponseBody from server
-        message     = opts.intro_text or 'Combat begins...',
-        last_buttons = nil,
-        enemy_name   = opts.enemy_name   or 'ENEMY',
-        enemy_hp     = opts.enemy_max_hp or 100,
-        enemy_max_hp = opts.enemy_max_hp or 100,
-        op_hp        = opts.op_max_hp    or 100,
-        op_max_hp    = opts.op_max_hp    or 100,
-        wave         = 1,
-        waves_req    = opts.waves_req    or 1,
-        status       = 'active',
-    }
-    local function do_roll()
-        state.phase = 'waiting'
-        local roll_body = { c = challenge_id }
-        if caps.secRng then
-            local rng_bytes = onion.secure_random(4)
-            if rng_bytes and #rng_bytes >= 4 then
-                local e = 0
-                for i = 1, 4 do e = e * 256 + rng_bytes:byte(i) end
-                roll_body.e = e   -- client entropy hint (uint32)
-            end
-        end
-        local resp, err = net.request(MT.COMBAT_ROLL_REQUEST, roll_body, 10000)
-        if err then
-            state.message = 'Network error: ' .. err
-            state.phase   = 'active'
-            return
-        end
-        state.session    = resp
-        state.enemy_hp   = resp.enemyHp or state.enemy_hp
-        state.op_hp      = resp.opHp    or state.op_hp
-        state.wave        = resp.wave    or state.wave
-        state.waves_req   = resp.wavesReq or state.waves_req
-        state.status      = resp.st      or 'active'
-        if resp.st == 'won' then
-            state.message = 'Victory! Challenge cleared.'
-            state.phase   = 'done'
-        elseif resp.st == 'lost' then
-            state.message = 'Defeated. Try again.'
-            state.phase   = 'done'
-        else
-            state.message = 'Wave ' .. state.wave .. '/' .. state.waves_req
-            state.phase   = 'active'
-        end
-    end
-    return {
-        begin = function(ctx)
-            draw_waiting('Starting combat...')
-            local resp, err = net.request(MT.CHALLENGE_BEGIN, { c = challenge_id, h = ctx.hardware_id })
-            if err then
-                state.message = err
-                return
-            end
-            local csess, cerr = net.request(MT.COMBAT_ROLL_REQUEST, { c = challenge_id })
-            if csess then
-                state.session  = csess
-                state.enemy_hp = csess.enemyHp  or state.enemy_max_hp
-                state.op_hp    = csess.opHp     or state.op_max_hp
-                state.wave      = csess.wave     or 1
-                state.waves_req = csess.wavesReq or state.waves_req
-                state.status    = csess.st       or 'active'
-            end
-            state.phase = 'intro'
-        end,
-        update = function(ctx, _dt)
-            local buttons = onion.buttons()
-            local pressed = edge(buttons, state.last_buttons)
-            state.last_buttons = buttons
-            if state.phase == 'intro' then
-                if pressed == 'select' then
-                    state.phase = 'active'
-                elseif pressed == 'cancel' then
-                    return 'done'
-                end
-            elseif state.phase == 'active' then
-                if pressed == 'select' then
-                    do_roll()
-                elseif pressed == 'cancel' then
-                    return 'done'
-                end
-            elseif state.phase == 'done' then
-                if pressed == 'select' or pressed == 'cancel' then
-                    return 'done'
-                end
-            end
-            return nil
-        end,
-        render = function(_ctx)
-            if state.phase == 'intro' then
-                ui.splash(state.enemy_name, state.message, '[SELECT] Fight  [CANCEL] Leave')
-            elseif state.phase == 'waiting' then
-                draw_waiting('Rolling...')
-            else
-                ui.combat_hud(state)
-            end
-        end,
-    }
-end
-function archetypes.dialogue(challenge_id, opts)
-    opts = opts or {}
-    local state = {
-        phase        = 'prompt',  -- prompt | listening | processing | result | done
-        result_text  = '',
-        passed       = false,
-        last_buttons = nil,
-    }
-    local function capture_voice_energy(ms)
-        if not caps.voice then return nil end
-        local ok = onion.sound_mic_begin({ sample_rate = 16000 })
-        if not ok then return nil end
-        local total_rms, total_peak, n = 0, 0, 0
-        local remaining = ms or 3000
-        while remaining > 0 do
-            local slice = math.min(remaining, 1000)
-            local lvl = onion.sound_mic_level(slice)
-            if lvl then
-                total_rms = total_rms + (lvl.rms or 0)
-                if (lvl.peak or 0) > total_peak then total_peak = lvl.peak end
-                n = n + 1
-            end
-            remaining = remaining - slice
-        end
-        onion.sound_mic_end()
-        if n == 0 then return nil end
-        return { rms = math.floor(total_rms / n), peak = total_peak }
-    end
-    local function submit_voice(transcript, audio_ref, energy)
-        state.phase = 'processing'
-        local body = {
-            c   = challenge_id,
-            t   = transcript,
-            ref = audio_ref,
-            v   = energy,   -- { rms, peak } when an on-badge mic was used
-        }
-        local resp, err = net.request(MT.VOICE_CAPTURE_SUBMIT, body, 15000)
-        if err then
-            state.result_text = 'Error: ' .. err
-            state.phase       = 'result'
-            return
-        end
-        state.passed      = resp and resp.passed or false
-        state.result_text = (resp and resp.message) or (state.passed and 'Correct!' or 'Try again.')
-        state.phase       = 'result'
-    end
-    return {
-        begin = function(ctx)
-            net.request(MT.CHALLENGE_BEGIN, { c = challenge_id, h = ctx.hardware_id })
-        end,
-        update = function(_ctx, _dt)
-            local buttons = onion.buttons()
-            local pressed = edge(buttons, state.last_buttons)
-            state.last_buttons = buttons
-            if state.phase == 'prompt' then
-                if pressed == 'select' then
-                    if caps.voice then
-                        state.phase = 'listening'
-                        onion.clear_display()
-                        ui.voice_screen('listening', opts.prompt_text)
-                        local energy = capture_voice_energy(3000)
-                        submit_voice('', nil, energy)
-                    else
-                        state.phase = 'listening'
-                        submit_voice('', nil)
-                    end
-                elseif pressed == 'cancel' then
-                    return 'done'
-                end
-            elseif state.phase == 'result' then
-                if pressed == 'select' or pressed == 'cancel' then
-                    if state.passed then return 'done'
-                    else
-                        state.phase = 'prompt'  -- retry
-                    end
-                end
-            end
-            return nil
-        end,
-        render = function(_ctx)
-            if state.phase == 'prompt' or state.phase == 'listening' then
-                local vstate = state.phase == 'listening' and 'listening' or 'idle'
-                ui.voice_screen(vstate, opts.prompt_text)
-            elseif state.phase == 'processing' then
-                draw_waiting('Analysing...')
-            else
-                ui.clear()
-                ui.border()
-                local icon = state.passed and '[ PASS ]' or '[ FAIL ]'
-                ui.title(icon, 20)
-                local lines = ui.wrap_text(state.result_text, 40)
-                ui.body_text(lines, 8, 50)
-                ui.divider(ui.H - 20)
-                onion.display_text('[SELECT] Continue  [CANCEL] Retry', 6, ui.H - 14,
-                    { font = 'small', clear = false })
-            end
-        end,
-    }
-end
-function archetypes.merchant(challenge_id, opts)
-    opts  = opts or {}
-    local items   = opts.items   or {}
-    local state = {
-        phase        = 'browsing',   -- browsing | confirming | waiting | done
-        sequence     = {},           -- current button combo being entered
-        message      = '',
-        last_buttons = nil,
-        result       = nil,
-    }
-    local btn_labels = {
-        up='U', down='D', left='L', right='R', select='SEL'
-    }
-    local function submit_sequence()
-        state.phase = 'waiting'
-        local resp, err = net.request(MT.MERCHANT_INPUT, {
-            c   = challenge_id,
-            seq = state.sequence,
-        }, 10000)
-        if err then
-            state.message = 'Error: ' .. err
-            state.phase   = 'browsing'
-            return
-        end
-        state.result  = resp
-        state.message = (resp and resp.message) or (resp and resp.passed and 'Trade accepted!' or 'Wrong sequence.')
-        state.phase   = 'done'
-    end
-    return {
-        begin = function(ctx)
-            net.request(MT.CHALLENGE_BEGIN, { c = challenge_id, h = ctx.hardware_id })
-        end,
-        update = function(ctx, _dt)
-            local buttons = onion.buttons()
-            local pressed = edge(buttons, state.last_buttons)
-            state.last_buttons = buttons
-            if state.phase == 'browsing' then
-                if pressed == 'cancel' then return 'done' end
-                if pressed and pressed ~= 'cancel' then
-                    local lbl = btn_labels[pressed] or pressed
-                    state.sequence[#state.sequence + 1] = pressed
-                    if #state.sequence >= 8 then
-                        submit_sequence()
-                    end
-                end
-            elseif state.phase == 'done' then
-                if pressed == 'select' or pressed == 'cancel' then
-                    return 'done'
-                end
-            end
-            return nil
-        end,
-        render = function(ctx)
-            local balance = (ctx.operative and ctx.operative.onions) or '?'
-            local seq_str = table.concat((function()
-                local t = {}
-                for _, s in ipairs(state.sequence) do
-                    t[#t+1] = btn_labels[s] or s
-                end
-                return t
-            end)(), '-')
-            if state.phase == 'waiting' then
-                draw_waiting('Processing trade...')
-            elseif state.phase == 'done' then
-                ui.clear()
-                ui.border()
-                ui.title(state.message, 60)
-                ui.divider(ui.H - 20)
-                onion.display_text('[SELECT] Leave', 6, ui.H - 14,
-                    { font = 'small', clear = false })
-            else
-                ui.merchant_screen(items, balance, seq_str)
-            end
-        end,
-    }
-end
-function archetypes.npc(challenge_id, opts)
-    opts = opts or {}
-    local choices = opts.choices or {
-        'I understand.',
-        'Tell me more.',
-        'Because of the infrastructure.',
-        'To protect the water supply.',
-        'I have the credentials.',
-        'The city depends on it.',
-    }
-    local state = {
-        phase        = 'intro',      -- intro | choosing | waiting | reply | done
-        session_id   = nil,
-        npc_text     = opts.greeting or 'Hello, Operative.',
-        selected     = 1,
-        last_buttons = nil,
-        passed       = false,
-    }
-    local function send_turn(utterance)
-        state.phase = 'waiting'
-        local body  = {
-            c = challenge_id,
-            s = state.session_id,
-            t = utterance,
-        }
-        local resp, err = net.request(MT.NPC_DIALOGUE_TURN, body, 20000)
-        if err then
-            state.npc_text = 'Network error: ' .. err
-            state.phase    = 'reply'
-            return
-        end
-        state.session_id = resp and resp.s or state.session_id
-        state.npc_text   = (resp and resp.t) or ''
-        state.passed     = (resp and resp.passed) or false
-        if state.passed then
-            state.phase = 'done'
-        else
-            state.phase = 'reply'
-        end
-    end
-    return {
-        begin = function(ctx)
-            net.request(MT.CHALLENGE_BEGIN, { c = challenge_id, h = ctx.hardware_id })
-        end,
-        update = function(_ctx, _dt)
-            local buttons = onion.buttons()
-            local pressed = edge(buttons, state.last_buttons)
-            state.last_buttons = buttons
-            if state.phase == 'intro' then
-                if pressed == 'select' then
-                    state.phase = 'choosing'
-                elseif pressed == 'cancel' then
-                    return 'done'
-                end
-            elseif state.phase == 'choosing' then
-                if pressed == 'up' then
-                    state.selected = math.max(1, state.selected - 1)
-                elseif pressed == 'down' then
-                    state.selected = math.min(#choices, state.selected + 1)
-                elseif pressed == 'select' then
-                    send_turn(choices[state.selected])
-                elseif pressed == 'cancel' then
-                    return 'done'
-                end
-            elseif state.phase == 'reply' then
-                if pressed == 'select' then
-                    state.phase = 'choosing'
-                elseif pressed == 'cancel' then
-                    return 'done'
-                end
-            elseif state.phase == 'done' then
-                if pressed == 'select' or pressed == 'cancel' then
-                    return 'done'
-                end
-            end
-            return nil
-        end,
-        render = function(_ctx)
-            local npc_name = opts.npc_name or 'NPC'
-            if state.phase == 'waiting' then
-                draw_waiting('Thinking...')
-                return
-            end
-            if state.phase == 'choosing' then
-                ui.clear()
-                ui.border()
-                ui.title('[ ' .. npc_name .. ' ]', 4)
-                local preview = state.npc_text:sub(1, 36)
-                onion.display_text(preview, 4, 22, { font = 'small', clear = false })
-                ui.divider(34)
-                ui.menu(choices, state.selected, 4, 38, ui.W - 8)
-                ui.divider(ui.H - 18)
-                onion.display_text('[UP/DN] Scroll  [SEL] Say  [CANCEL] Leave',
-                    4, ui.H - 14, { font = 'small', clear = false })
-            elseif state.phase == 'done' then
-                ui.clear()
-                ui.border()
-                ui.title('[ ' .. npc_name .. ' ]', 20)
-                local lines = ui.wrap_text(state.npc_text, 38)
-                ui.body_text(lines, 6, 44)
-                ui.divider(ui.H - 20)
-                onion.display_text('[SELECT] Continue', 6, ui.H - 14,
-                    { font = 'small', clear = false })
-            else
-                ui.clear()
-                ui.border()
-                ui.title('[ ' .. npc_name .. ' ]', 4)
-                ui.divider(18)
-                local lines = ui.wrap_text(state.npc_text, 40)
-                ui.body_text(lines, 6, 24)
-                ui.divider(ui.H - 20)
-                local hint = state.phase == 'intro'
-                    and '[SELECT] Respond  [CANCEL] Leave'
-                    or  '[SELECT] Continue talking'
-                onion.display_text(hint, 6, ui.H - 14,
-                    { font = 'small', clear = false })
-            end
-        end,
-    }
-end
-return archetypes
-end
-
 package.preload["lib.caps"] = function(...)
 local caps = {
-    http    = type(onion.http_get) == 'function' and type(onion.http_post) == 'function',
+    http    = false,
     mqtt    = type(onion.mqtt_publish) == 'function' and type(onion.mqtt_subscribe) == 'function',
     secRng  = type(onion.secure_random) == 'function',
     voice   = type(onion.sound_mic_begin) == 'function' and type(onion.sound_mic_read) == 'function',
     speaker = type(onion.sound_speaker_begin) == 'function',
     subghz  = type(onion.subghz_begin) == 'function' and type(onion.subghz_transmit) == 'function',
 }
-caps.seAttest = false
+caps.sign = type(onion.sign_message) == 'function'
+    or type(onion.wallet_sign) == 'function'
+    or type(onion.se_sign) == 'function'
+caps.seAttest = caps.sign
 local active = {}
 for k, v in pairs(caps) do
     if v == true then active[#active + 1] = k end
@@ -444,122 +25,6 @@ else
     onion.log('oRPG caps: base (ESP-NOW relay only)')
 end
 return caps
-end
-
-package.preload["lib.net"] = function(...)
-local proto = require('lib.proto')
-local caps  = require('lib.caps')
-local net = {}
-local NET_TIMEOUT_MS   = 8000   -- per-attempt receive timeout
-local NET_RETRIES      = 3      -- total attempts before giving up
-local NET_INTER_FRAME_MS = 20   -- small pause between outgoing frames
-local _msg_id_counter = 0
-local function next_msg_id()
-    _msg_id_counter = (_msg_id_counter + 1) % 65536
-    return _msg_id_counter
-end
-local _beacon_mac = 'ff:ff:ff:ff:ff:ff'
-function net.init(beacon_mac)
-    _beacon_mac = beacon_mac or 'ff:ff:ff:ff:ff:ff'
-    onion.log('net: target beacon ' .. _beacon_mac)
-end
-function net.send_frames(frames)
-    for i, frame in ipairs(frames) do
-        local ok, err = onion.espnow_send(frame, _beacon_mac)
-        if not ok then
-            return nil, 'send frame ' .. i .. ' failed: ' .. tostring(err)
-        end
-        if i < #frames then
-            onion.sleep(NET_INTER_FRAME_MS)
-        end
-    end
-    return true
-end
-function net.request(msg_type, body, timeout_ms)
-    timeout_ms = timeout_ms or NET_TIMEOUT_MS
-    local msg_id = next_msg_id()
-    local ok, result = pcall(proto.encode, msg_type, msg_id, body)
-    if not ok then
-        return nil, 'encode error: ' .. tostring(result)
-    end
-    local frames = result
-    for attempt = 1, NET_RETRIES do
-        local sent, send_err = net.send_frames(frames)
-        if not sent then
-            if attempt == NET_RETRIES then
-                return nil, 'send failed: ' .. tostring(send_err)
-            end
-            onion.sleep(200)
-        else
-            local reassembler = proto.new_reassembler()
-            local deadline = timeout_ms
-            while deadline > 0 do
-                local slice = math.min(deadline, 2000)
-                local msg = onion.espnow_receive(slice)
-                if msg then
-                    local frame, frame_err = proto.decode_frame(msg.message)
-                    if not frame then
-                        onion.log('net: bad frame: ' .. tostring(frame_err))
-                    elseif frame.msg_id == msg_id then
-                        local decoded = reassembler:push(frame)
-                        if decoded ~= nil then
-                            if frame.msg_type == proto.MsgType.ERROR then
-                                local code = (type(decoded) == 'table' and decoded.code) or 'ERR'
-                                local emsg = (type(decoded) == 'table' and decoded.msg)  or ''
-                                return nil, code .. ': ' .. emsg
-                            end
-                            return decoded, nil
-                        end
-                    end
-                end
-                deadline = deadline - slice
-            end
-            if attempt < NET_RETRIES then
-                onion.log('net: timeout attempt ' .. attempt .. ', retrying...')
-                onion.sleep(300)
-            end
-        end
-    end
-    return nil, 'request timed out after ' .. NET_RETRIES .. ' attempts'
-end
-function net.http_request(server_url, msg_type, body_table)
-    if not caps.http then
-        return nil, 'http cap not available'
-    end
-    local msg_id = next_msg_id()
-    local frames = proto.encode(msg_type, msg_id, body_table)
-    if #frames > 1 then
-        return nil, 'http path: message too large (use beacon relay)'
-    end
-    local frame_bytes = frames[1]
-    local hex_parts = {}
-    for i = 1, #frame_bytes do
-        hex_parts[i] = string.format('%02x', frame_bytes:byte(i))
-    end
-    local frame_hex = table.concat(hex_parts)
-    local payload = proto.json_encode({
-        direct = true,
-        msgType = msg_type,
-        msgId = msg_id,
-        frameHex = frame_hex,
-    })
-    local resp, err = onion.http_post(server_url .. '/api/relay', payload, {
-        content_type = 'application/json',
-        timeout_ms = 15000,
-    })
-    if not resp then
-        return nil, 'http error: ' .. tostring(err)
-    end
-    if resp.status ~= 200 then
-        return nil, 'http error: status ' .. tostring(resp.status)
-    end
-    local resp_body = proto.json_decode(resp.body)
-    if not resp_body then
-        return nil, 'http: could not decode response'
-    end
-    return resp_body, nil
-end
-return net
 end
 
 package.preload["lib.proto"] = function(...)
@@ -573,6 +38,8 @@ proto.MsgType = {
     BEACON_HELLO         = 0x01,
     OPERATIVE_IDENTIFY   = 0x02,
     IDENTIFY_ACK         = 0x03,
+    BADGE_MOVE           = 0x04,
+    EINK_FRAME           = 0x05,
     CHALLENGE_BEGIN      = 0x10,
     CHALLENGE_INTRO      = 0x11,
     CHALLENGE_RESULT     = 0x12,
@@ -820,93 +287,124 @@ end
 return proto
 end
 
-package.preload["lib.router"] = function(...)
-local ui = require('lib.ui')
-local router = {}
-local _stack = {}
-local _loaded = {}
-local function load_screen(challenge_id)
-    if _loaded[challenge_id] then
-        return _loaded[challenge_id]
-    end
-    local slug = challenge_id:gsub('%.', '_')
-    local mod_name = 'screens.' .. slug
-    local ok, mod = pcall(require, mod_name)
-    if not ok then
-        onion.log('router: failed to load screen ' .. mod_name .. ': ' .. tostring(mod))
-        return nil, tostring(mod)
-    end
-    if type(mod) ~= 'table' then
-        return nil, 'screen module ' .. mod_name .. ' did not return a table'
-    end
-    if type(mod.begin)  ~= 'function' then return nil, mod_name .. ' missing begin()' end
-    if type(mod.update) ~= 'function' then return nil, mod_name .. ' missing update()' end
-    if type(mod.render) ~= 'function' then return nil, mod_name .. ' missing render()' end
-    _loaded[challenge_id] = mod
-    return mod
+package.preload["lib.net"] = function(...)
+local proto = require('lib.proto')
+local caps  = require('lib.caps')
+local net = {}
+local NET_TIMEOUT_MS   = 8000   -- per-attempt receive timeout
+local NET_RETRIES      = 3      -- total attempts before giving up
+local NET_INTER_FRAME_MS = 20   -- small pause between outgoing frames
+local _msg_id_counter = 0
+local function next_msg_id()
+    _msg_id_counter = (_msg_id_counter + 1) % 65536
+    return _msg_id_counter
 end
-function router.push(challenge_id, ctx)
-    local mod, err = load_screen(challenge_id)
-    if not mod then
-        return nil, err
+local _beacon_mac = 'ff:ff:ff:ff:ff:ff'
+function net.init(beacon_mac)
+    _beacon_mac = beacon_mac or 'ff:ff:ff:ff:ff:ff'
+    onion.log('net: target beacon ' .. _beacon_mac)
+end
+function net.send_frames(frames)
+    for i, frame in ipairs(frames) do
+        local ok, err = onion.espnow_send(frame, _beacon_mac)
+        if not ok then
+            return nil, 'send frame ' .. i .. ' failed: ' .. tostring(err)
+        end
+        if i < #frames then
+            onion.sleep(NET_INTER_FRAME_MS)
+        end
     end
-    local ok, begin_err = pcall(mod.begin, ctx)
-    if not ok then
-        return nil, 'screen begin error: ' .. tostring(begin_err)
-    end
-    _stack[#_stack + 1] = { id = challenge_id, mod = mod, ctx = ctx }
-    onion.log('router: entered screen ' .. challenge_id)
     return true
 end
-function router.pop()
-    if #_stack > 0 then
-        local top = _stack[#_stack]
-        _stack[#_stack] = nil
-        onion.log('router: exited screen ' .. top.id)
-    end
-end
-function router.current_id()
-    if #_stack == 0 then return nil end
-    return _stack[#_stack].id
-end
-function router.update(ctx, dt)
-    if #_stack == 0 then return nil end
-    local top = _stack[#_stack]
-    local ok, result = pcall(top.mod.update, ctx, dt)
+function net.request(msg_type, body, timeout_ms)
+    timeout_ms = timeout_ms or NET_TIMEOUT_MS
+    local msg_id = next_msg_id()
+    local ok, result = pcall(proto.encode, msg_type, msg_id, body)
     if not ok then
-        onion.log('router: update error in ' .. top.id .. ': ' .. tostring(result))
-        return 'error'
+        return nil, 'encode error: ' .. tostring(result)
     end
-    return result
-end
-function router.render(ctx)
-    if #_stack == 0 then return end
-    local top = _stack[#_stack]
-    onion.clear_display()
-    local ok, err = pcall(top.mod.render, ctx)
-    if not ok then
-        onion.log('router: render error in ' .. top.id .. ': ' .. tostring(err))
-        onion.display_lines({ 'RENDER ERROR', top.id, tostring(err):sub(1, 30) },
-            6, 40, 18, { font = 'small', clear = false })
+    local frames = result
+    for attempt = 1, NET_RETRIES do
+        local sent, send_err = net.send_frames(frames)
+        if not sent then
+            if attempt == NET_RETRIES then
+                return nil, 'send failed: ' .. tostring(send_err)
+            end
+            onion.sleep(200)
+        else
+            local reassembler = proto.new_reassembler()
+            local deadline = timeout_ms
+            while deadline > 0 do
+                local slice = math.min(deadline, 2000)
+                local msg = onion.espnow_receive(slice)
+                if msg then
+                    local frame, frame_err = proto.decode_frame(msg.message)
+                    if not frame then
+                        onion.log('net: bad frame: ' .. tostring(frame_err))
+                    elseif frame.msg_id == msg_id then
+                        local decoded = reassembler:push(frame)
+                        if decoded ~= nil then
+                            if frame.msg_type == proto.MsgType.ERROR then
+                                local code = (type(decoded) == 'table' and decoded.code) or 'ERR'
+                                local emsg = (type(decoded) == 'table' and decoded.msg)  or ''
+                                return nil, code .. ': ' .. emsg
+                            end
+                            return decoded, nil
+                        end
+                    end
+                end
+                deadline = deadline - slice
+            end
+            if attempt < NET_RETRIES then
+                onion.log('net: timeout attempt ' .. attempt .. ', retrying...')
+                onion.sleep(300)
+            end
+        end
     end
+    return nil, 'request timed out after ' .. NET_RETRIES .. ' attempts'
 end
-function router.replace(challenge_id, ctx)
-    router.pop()
-    return router.push(challenge_id, ctx)
+function net.http_request()
+    return nil, 'direct HTTP disabled: use ESP-NOW beacon relay'
 end
-return router
+return net
 end
 
 package.preload["lib.ui"] = function(...)
 local ui = {}
-ui.W = 264
-ui.H = 176
-ui.FONT_SMALL_W  = 6   -- ~6px per char, ~43 chars per row
-ui.FONT_BOLD_W   = 8   -- ~8px per char, ~33 chars per row
-ui.FONT_LARGE_W  = 12  -- ~12px per char, ~22 chars per row
-ui.LH_SMALL  = 14
-ui.LH_BOLD   = 16
-ui.LH_LARGE  = 24
+local _display_size = nil
+if type(onion.display_size) == 'function' then
+    local ok, size = pcall(onion.display_size)
+    if ok and type(size) == 'table' then _display_size = size end
+end
+ui.W = (_display_size and _display_size.width) or 264
+ui.H = (_display_size and _display_size.height) or 176
+ui.FONT_SMALL_W  = 10  -- FreeMono9pt7b, ~25 chars per row
+ui.FONT_BOLD_W   = 11  -- FreeMonoBold9pt7b
+ui.FONT_LARGE_W  = 19  -- FreeMonoBold18pt7b
+ui.LH_SMALL  = 18
+ui.LH_BOLD   = 20
+ui.LH_LARGE  = 34
+local _frame_depth = 0
+function ui.begin_frame()
+    _frame_depth = _frame_depth + 1
+    if _frame_depth == 1 and type(onion.display_begin) == 'function' then
+        onion.display_begin()
+    end
+end
+function ui.end_frame()
+    if _frame_depth <= 0 then return end
+    _frame_depth = _frame_depth - 1
+    if _frame_depth == 0 and type(onion.display_commit) == 'function' then
+        onion.display_commit()
+    end
+end
+function ui.frame(fn)
+    ui.begin_frame()
+    local ok, result = pcall(fn)
+    ui.end_frame()
+    if not ok then error(result) end
+    return result
+end
 function ui.clear()
     onion.clear_display()
 end
@@ -1133,2826 +631,338 @@ function ui.confirm(question, hint)
     local hx = math.max(4, math.floor((ui.W - #hint * ui.FONT_SMALL_W) / 2))
     onion.display_text(hint, hx, ui.H - 14, { font = 'small', clear = false })
 end
+local function draw_op(op)
+    if type(op) ~= 'table' then return end
+    local k = op.k or op.op
+    if k == 'clear' then
+        onion.clear_display()
+    elseif k == 'text' then
+        onion.display_text(
+            tostring(op.t or ''),
+            op.x or 0,
+            op.y or 0,
+            { font = op.f or 'small', clear = false }
+        )
+    elseif k == 'lines' then
+        ui.body_text(
+            op.lines or {},
+            op.x or 0,
+            op.y or 0,
+            op.lh or ui.LH_SMALL,
+            op.f or 'small',
+            op.w,
+            op.max
+        )
+    elseif k == 'line' then
+        onion.display_line(
+            op.x1 or 0,
+            op.y1 or 0,
+            op.x2 or 0,
+            op.y2 or 0,
+            { clear = false }
+        )
+    elseif k == 'rect' then
+        onion.display_rect(
+            op.x or 0,
+            op.y or 0,
+            op.w or 1,
+            op.h or 1,
+            { clear = false, fill = op.fill == true }
+        )
+    end
+end
+function ui.render_frame(frame)
+    if type(frame) ~= 'table' then return false end
+    local ops = frame.ops
+    if type(ops) ~= 'table' then return false end
+    ui.begin_frame()
+    for _, op in ipairs(ops) do
+        if type(op) == 'table' and (op.k or op.op) == 'commit' then
+        else
+            draw_op(op)
+        end
+    end
+    ui.end_frame()
+    return true
+end
 return ui
 end
 
-package.preload["screens.0_1"] = function(...)
-local archetypes = require('lib.archetypes')
-local ui         = require('lib.ui')
-local net        = require('lib.net')
-local proto      = require('lib.proto')
-local caps       = require('lib.caps')
-local CHALLENGE_ID = '0.1'
-local VENDOR_LINES = {
-    main = "Welcome to Vienna Bob's. One Chicago dog. No. Ketchup.",
-    deepdish = "Whatever you do — do NOT ask for ketchup. Capisce, champ?",
-}
-local KETCHUP_LINE =
-    "KETCHUP. On a Chicago dog. Oh for cryin' out loud." ..
-    " Vienna Bob is ACTIVATED."
-local NORMAL_LINE =
-    "Smart condiment choice. Too bad Bob got the override." ..
-    " Educational purposes, pal."
-local WIN_LINES = {
-    "You beat the robot vendor. Encased Meat Mk.I acquired.",
-    "Operative credential registered. 50 Onions incoming.",
-    "LESSON: Chicago food supply = just-in-time distribution.",
-    "One missing input cascades. That was the onion.",
-    "-- DEEPDISH (educational, grudgingly)"
-}
-local LOSS_LINE =
-    "Ketchup-tier performance. Try again, champ."
-local REGISTRATION_LINE =
-    "Operative ID registered. You exist now. Congratulations."
-local state = {
-    phase        = 'vendor',   -- vendor | entering_combat | combat_active | win | lose
-    ketchup      = false,      -- did the player press RIGHT (order ketchup)?
-    last_buttons = nil,
-    runner       = nil,        -- combat archetype runner (lazy init)
-    registered   = false,      -- did we show the registration beat yet?
-    scroll_tick  = 0,          -- counter for win text scrolling
-}
-local function edge(buttons, last)
-    for _, b in ipairs({ 'select', 'cancel', 'up', 'down', 'left', 'right' }) do
-        if buttons[b] and not (last and last[b]) then return b end
-    end
+package.preload["lib.identity"] = function(...)
+local proto = require('lib.proto')
+local identity = {}
+local function call0(name)
+    local fn = onion[name]
+    if type(fn) ~= 'function' then return nil end
+    local ok, value = pcall(fn)
+    if ok then return value end
+    onion.log('identity: ' .. name .. ' failed: ' .. tostring(value))
     return nil
 end
-local function make_runner()
-    local intro = state.ketchup and KETCHUP_LINE or NORMAL_LINE
-    return archetypes.combat(CHALLENGE_ID, {
-        enemy_name   = 'Vienna Bob (HOSTILE)',
-        enemy_max_hp = 80,
-        op_max_hp    = 100,
-        waves_req    = 1,
-        intro_text   = intro,
-    })
+local function as_nonempty_string(value)
+    if type(value) ~= 'string' or value == '' then return nil end
+    return value
 end
-local function notify_ketchup_choice()
+function identity.hardware_id()
+    return as_nonempty_string(call0('hardware_id')) or 'unknown-badge'
 end
-local screen = {}
-function screen.begin(ctx)
-    onion.log('screen 0.1: begin (act0-1-ketchup-gauntlet)')
-    state.phase        = 'vendor'
-    state.ketchup      = false
-    state.last_buttons = nil
-    state.runner       = nil
-    state.registered   = false
-    state.scroll_tick  = 0
-    local resp, err = net.request(proto.MsgType.CHALLENGE_BEGIN, {
-        c = CHALLENGE_ID,
-        h = ctx.hardware_id,
-    })
-    if err then
-        onion.log('screen 0.1: begin error: ' .. tostring(err))
-    end
-    _ = resp
-end
-function screen.update(ctx, dt)
-    local buttons = onion.buttons()
-    local pressed = edge(buttons, state.last_buttons)
-    state.last_buttons = buttons
-    if state.phase == 'vendor' then
-        if pressed == 'cancel' then
-            return 'done'
-        elseif pressed == 'right' then
-            state.ketchup = true
-            state.phase   = 'entering_combat'
-        elseif pressed == 'select' or pressed == 'left' or pressed == 'up' then
-            state.ketchup = false
-            state.phase   = 'entering_combat'
-        end
-    end
-    if state.phase == 'entering_combat' then
-        state.runner = make_runner()
-        state.runner.begin(ctx)
-        state.phase = 'combat_active'
-    end
-    if state.phase == 'combat_active' then
-        local result = state.runner.update(ctx, dt)
-        if result == 'done' then
-            local session_status = 'lost'
-            if state.runner._state then
-                session_status = state.runner._state.status or 'lost'
-            end
-            if session_status == 'won' then
-                state.phase = 'win'
-            else
-                state.phase = 'lose'
-            end
-        end
-    elseif state.phase == 'win' then
-        state.scroll_tick = state.scroll_tick + (dt or 80)
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-    elseif state.phase == 'lose' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-    end
+function identity.onion_id()
+    local value = call0('onion_id')
+    if type(value) == 'number' and value ~= 0 then return value end
     return nil
 end
-function screen.render(ctx)
-    if state.phase == 'vendor' then
-        ui.border()
-        ui.title("VIENNA BOB'S", 4)
-        ui.divider(18)
-        local lines = ui.wrap_text(VENDOR_LINES.main, 38)
-        ui.body_text(lines, 6, 24)
-        onion.display_text('DEEPDISH:', 6, 58, { font = 'bold', clear = false })
-        local dd_lines = ui.wrap_text(VENDOR_LINES.deepdish, 36)
-        ui.body_text(dd_lines, 6, 72)
-        ui.divider(ui.H - 30)
-        onion.display_text('[SEL/L/U] Order dog', 6, ui.H - 26,
-            { font = 'small', clear = false })
-        onion.display_text('[RIGHT]   Order ketchup   [CANCEL] Leave', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'entering_combat' or state.phase == 'combat_active' then
-        if state.runner then
-            state.runner.render(ctx)
-        else
-            ui.title('Loading...', 80)
-        end
-    elseif state.phase == 'win' then
-        ui.border()
-        ui.title('GAUNTLET CLEARED', 4)
-        ui.divider(18)
-        local flavor = state.ketchup and 'Ketchup ordered. Chaos respected.' or 'Dog ordered normally. Bob disagreed.'
-        onion.display_text(flavor, 6, 22, { font = 'small', clear = false })
-        local revealed = math.min(#WIN_LINES,
-            1 + math.floor(state.scroll_tick / 2000))
-        for i = 1, revealed do
-            local ly = 34 + (i - 1) * ui.LH_SMALL
-            onion.display_text(WIN_LINES[i], 6, ly, { font = 'small', clear = false })
-        end
-        if revealed >= #WIN_LINES then
-            ui.divider(ui.H - 30)
-            onion.display_text(REGISTRATION_LINE, 6, ui.H - 26,
-                { font = 'small', clear = false })
-        end
-        ui.divider(ui.H - 16)
-        onion.display_text('[SELECT] Continue', 6, ui.H - 12,
-            { font = 'small', clear = false })
-    elseif state.phase == 'lose' then
-        ui.border()
-        ui.title('DEFEATED', 40)
-        ui.divider(60)
-        local lines = ui.wrap_text(LOSS_LINE, 38)
-        ui.body_text(lines, 6, 68)
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] Try again  [CANCEL] Leave', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    end
-end
-return screen
-end
-
-package.preload["screens.1_1"] = function(...)
-local archetypes = require('lib.archetypes')
-local ui         = require('lib.ui')
-local net        = require('lib.net')
-local proto      = require('lib.proto')
-local caps       = require('lib.caps')
-local CHALLENGE_ID   = '1.1'
-local CHALLENGE_NAME = 'Malört Fountains'
-local runner = nil
-local state = {
-    phase        = 'deepdish_intro',  -- deepdish_intro | challenge | done
-    last_buttons = nil,
-    intro_text   = nil,    -- DEEPDISH intro fetched from server
-    scroll       = 0,      -- intro text scroll offset (lines)
-    result_text  = nil,    -- final pass/fail message
-    passed       = false,
-}
-local function edge(buttons, last)
-    for _, b in ipairs({'select','cancel','up','down','left','right'}) do
-        if buttons[b] and not (last and last[b]) then return b end
-    end
-    return nil
-end
-local function draw_fountain(y_offset, malort)
-    local W = ui.W
-    local cx = math.floor(W / 2)
-    onion.display_rect(cx - 20, y_offset + 28, 40, 6, { color = 'black', fill = false, clear = false })
-    onion.display_rect(cx - 2, y_offset + 4, 4, 24, { color = 'black', fill = true, clear = false })
-    onion.display_rect(cx - 8, y_offset, 2, 6, { color = 'black', fill = true, clear = false })
-    onion.display_rect(cx + 6, y_offset, 2, 6, { color = 'black', fill = true, clear = false })
-    onion.display_rect(cx - 1, y_offset - 2, 2, 4, { color = 'black', fill = true, clear = false })
-    local lbl = malort and '~~ MALÖRT ~~' or '~~ H2O ~~'
-    local lx  = cx - math.floor(#lbl * ui.FONT_SMALL_W / 2)
-    onion.display_text(lbl, lx, y_offset + 36, { font = 'small', clear = false })
-end
-local screen = {}
-function screen.begin(ctx)
-    onion.log('screen 1.1: begin')
-    state.phase       = 'deepdish_intro'
-    state.last_buttons = nil
-    state.intro_text   = nil
-    state.scroll       = 0
-    state.result_text  = nil
-    state.passed       = false
-    runner             = nil
-    local resp, err = net.request(proto.MsgType.CHALLENGE_BEGIN, {
-        c = CHALLENGE_ID,
-        h = ctx.hardware_id,
-    })
-    if err then
-        onion.log('1.1 begin error: ' .. err)
-        state.intro_text = "DEEPDISH: Malört Fountains.\nSpeak the treatment sequence.\n(Network error — local prompt.)"
-    elseif resp and resp.intro then
-        state.intro_text = resp.intro
-    else
-        state.intro_text =
-            "DEEPDISH: Thirsty, champ?\n" ..
-            "That's Malört, straight from\n" ..
-            "the tap. Name all five stages\n" ..
-            "of Chicago water treatment\n" ..
-            "to get clean water back.\n" ..
-            "[Lesson: intake→crib→tunnel\n" ..
-            "→Jardine plant→grid]"
-    end
-    runner = archetypes.dialogue(CHALLENGE_ID, {
-        prompt_text  =
-            "Speak the 5 stages:\n" ..
-            "intake → crib → tunnel\n" ..
-            "→ Jardine plant → grid\n" ..
-            "\n[SELECT] to record"  ..
-            (caps.voice and "" or "\n(Beacon will capture)"),
-        success_text = "Water Main Key unlocked!\nFountains run clean again.",
-        fail_text    = "Fountain burps Malört.\n[SELECT] Retry",
-    })
-end
-function screen.update(ctx, dt)
-    local buttons = onion.buttons()
-    local pressed = edge(buttons, state.last_buttons)
-    state.last_buttons = buttons
-    if state.phase == 'deepdish_intro' then
-        if pressed == 'cancel' then
-            return 'done'
-        elseif pressed == 'up' then
-            state.scroll = math.max(0, state.scroll - 1)
-        elseif pressed == 'down' then
-            state.scroll = state.scroll + 1
-        elseif pressed == 'select' then
-            state.phase = 'challenge'
-            runner.begin(ctx)
-        end
-    elseif state.phase == 'challenge' then
-        local result = runner.update(ctx, dt)
-        if result == 'done' then
-            state.phase = 'done'
-        end
-    elseif state.phase == 'done' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-    end
-    return nil
-end
-function screen.render(ctx)
-    if state.phase == 'deepdish_intro' then
-        ui.border()
-        ui.title('MALÖRT FOUNTAINS', 4)
-        ui.divider(18)
-        draw_fountain(20, true)
-        if state.intro_text then
-            local lines = ui.wrap_text(state.intro_text, 18)
-            local start = state.scroll + 1
-            local max_lines = 6
-            for i = start, math.min(#lines, start + max_lines - 1) do
-                local y = 22 + (i - start) * 12
-                onion.display_text(lines[i], 4, y, { font = 'small', clear = false })
-            end
-            if #lines > max_lines then
-                local scroll_hint = 'v' .. (state.scroll + 1) .. '/' .. math.max(1, #lines - max_lines + 1)
-                onion.display_text(scroll_hint, 4, ui.H - 26, { font = 'small', clear = false })
-            end
-        end
-        ui.divider(ui.H - 18)
-        onion.display_text('[SEL] Begin  [U/D] Scroll  [CANCEL] Leave',
-            4, ui.H - 14, { font = 'small', clear = false })
-    elseif state.phase == 'challenge' then
-        runner.render(ctx)
-    elseif state.phase == 'done' then
-        ui.border()
-        ui.title('MALÖRT FOUNTAINS', 20)
-        ui.divider(38)
-        draw_fountain(40, false)  -- always show clean water on done screen
-        onion.display_text('Fountain restored.', 4, 88,
-            { font = 'small', clear = false })
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] Continue', 4, ui.H - 14,
-            { font = 'small', clear = false })
-    end
-end
-return screen
-end
-
-package.preload["screens.1_2"] = function(...)
-local archetypes = require('lib.archetypes')
-local ui         = require('lib.ui')
-local net        = require('lib.net')
-local proto      = require('lib.proto')
-local CHALLENGE_ID = '1.2'
-local FEEDERS = {
-    'IRVING PARK FEEDER',
-    'ALBANY PARK LOOP',
-    'PRIMARY BUS',
-}
-local INTRO_TEXT =
-    "North Side feeders: TRIPPED. Three breakers, three demand spikes. " ..
-    "Survive each wave to close a breaker. I believe in you, champ. " ..
-    "Not really, but the legal team said I had to say something nice."
-local state = {
-    phase            = 'intro',   -- intro | combat | breaker_flash | lesson | done
-    runner           = nil,       -- combat archetype runner
-    intro_text       = INTRO_TEXT,
-    last_buttons     = nil,
-    wave             = 0,         -- last wave completed (0 = none yet)
-    waves_required   = 3,
-    flash_timer      = 0,         -- ms remaining for the breaker-close flash
-    won              = false,
-}
-local function edge(buttons, last)
-    for _, b in ipairs({'select','cancel','up','down','left','right'}) do
-        if buttons[b] and not (last and last[b]) then return b end
-    end
-    return nil
-end
-local function make_runner()
-    return archetypes.combat(CHALLENGE_ID, {
-        enemy_name   = 'DEMAND SPIKE',
-        enemy_max_hp = 100,   -- server sets per-wave HP; this is the display max
-        op_max_hp    = 100,
-        waves_req    = 3,
-        intro_text   = state.intro_text,
-    })
-end
-local function draw_breaker_bar(wave_completed)
-    local y = ui.H - 22
-    onion.display_text('BREAKERS:', 6, y, { font = 'small', clear = false })
-    for i = 1, 3 do
-        local x = 60 + (i - 1) * 22
-        if i <= wave_completed then
-            onion.display_rect(x, y - 1, 14, 10,
-                { color = 'black', fill = true, clear = false })
-        else
-            onion.display_rect(x, y - 1, 14, 10,
-                { color = 'black', fill = false, clear = false })
-        end
-    end
-end
-local screen = {}
-function screen.begin(ctx)
-    onion.log('screen 1.2: begin')
-    state.phase        = 'intro'
-    state.runner       = nil
-    state.wave         = 0
-    state.flash_timer  = 0
-    state.won          = false
-    state.last_buttons = nil
-    state.intro_text   = INTRO_TEXT
-    local resp, err = net.request(proto.MsgType.CHALLENGE_BEGIN,
-        { c = CHALLENGE_ID, h = ctx.hardware_id })
-    if resp and resp.intro then
-        state.intro_text = resp.intro
-    elseif err then
-        onion.log('1.2: CHALLENGE_BEGIN error: ' .. tostring(err))
-    end
-    state.runner = make_runner()
-    state.runner.begin(ctx)
-    state.phase = 'intro'
-end
-function screen.update(ctx, dt)
-    local buttons = onion.buttons()
-    local pressed = edge(buttons, state.last_buttons)
-    state.last_buttons = buttons
-    if state.phase == 'breaker_flash' then
-        state.flash_timer = state.flash_timer - dt
-        if state.flash_timer <= 0 then
-            if state.won then
-                state.phase = 'lesson'
-            else
-                state.phase = 'combat'
-            end
-        end
-        return nil
-    end
-    if state.phase == 'intro' then
-        if pressed == 'select' then
-            state.phase = 'combat'
-        elseif pressed == 'cancel' then
-            return 'done'
-        end
-        return nil
-    end
-    if state.phase == 'combat' then
-        local result = state.runner.update(ctx, dt)
-        if result == 'done' then
-            local session = state.runner._session  -- may be nil on old firmware
-            local st = session and session.st or nil
-            if st == 'won' then
-                state.won  = true
-                state.wave = state.waves_required
-                state.flash_timer = 600   -- longer flash for final victory
-                state.phase = 'breaker_flash'
-            elseif st == 'lost' or st == 'expired' then
-                state.won   = false
-                state.phase = 'done'
-            else
-                state.won   = false
-                state.phase = 'done'
-            end
-            return nil
-        end
-        local session = state.runner._session
-        if session and session.wave and session.wave > state.wave then
-            local newly_closed = session.wave
-            if newly_closed < state.waves_required then
-                state.wave        = newly_closed
-                state.flash_timer = 250
-                state.phase       = 'breaker_flash'
-            else
-                state.wave = newly_closed
-            end
-        end
-        return nil
-    end
-    if state.phase == 'lesson' then
-        if pressed == 'select' or pressed == 'cancel' then
-            state.phase = 'done'
-        end
-        return nil
-    end
-    if state.phase == 'done' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-    end
-    return nil
-end
-function screen.render(ctx)
-    onion.clear_display()
-    if state.phase == 'intro' then
-        ui.border()
-        ui.title('SUBSTATION REROUTE', 4)
-        ui.divider(18)
-        local fy = 22
-        for i = 1, 3 do
-            onion.display_text(
-                '[ ] ' .. FEEDERS[i], 6, fy,
-                { font = 'small', clear = false })
-            fy = fy + 12
-        end
-        ui.divider(60)
-        local lines = ui.wrap_text(state.intro_text, 36)
-        ui.body_text(lines, 6, 64)
-        ui.divider(ui.H - 18)
-        onion.display_text(
-            '[SELECT] Fight  [CANCEL] Leave', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'breaker_flash' then
-        ui.border()
-        ui.title('BREAKER CLOSED', 30)
-        local feeder = FEEDERS[state.wave] or ('FEEDER ' .. state.wave)
-        local cx = math.max(4,
-            math.floor((ui.W - #feeder * ui.FONT_SMALL_W) / 2))
-        onion.display_text(feeder, cx, 60,
-            { font = 'small', clear = false })
-        draw_breaker_bar(state.wave)
-    elseif state.phase == 'combat' then
-        state.runner.render(ctx)
-        draw_breaker_bar(state.wave)
-    elseif state.phase == 'lesson' then
-        ui.border()
-        ui.title('[ ALL BREAKERS CLOSED ]', 8)
-        ui.divider(22)
-        local lesson_lines = ui.wrap_text(
-            'The feeder is live. Grid Credential earned. ' ..
-            'Substations step ~138 kV down to ~12 kV for neighborhood ' ..
-            'feeders. Each breaker isolates one segment — trip them ' ..
-            'all and cascading failure drops the city block by block. ' ..
-            'You just stopped that. Nice work, pal.', 38)
-        ui.body_text(lesson_lines, 6, 28)
-        ui.divider(ui.H - 18)
-        onion.display_text('[SELECT] OK', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'done' then
-        if state.won then
-            ui.splash('Grid Restored', 'Grid Credential unlocked', '[SELECT] OK')
-        else
-            ui.border()
-            ui.title('BLACKOUT', 50)
-            local lines = ui.wrap_text(
-                'The demand spikes won this round. ' ..
-                'The North Side is still dark. Try again, champ.', 38)
-            ui.body_text(lines, 6, 80)
-            ui.divider(ui.H - 18)
-            onion.display_text('[SELECT] Retry  [CANCEL] Leave', 6, ui.H - 14,
-                { font = 'small', clear = false })
-        end
-    end
-end
-return screen
-end
-
-package.preload["screens.1_3"] = function(...)
-local archetypes = require('lib.archetypes')
-local ui         = require('lib.ui')
-local net        = require('lib.net')
-local proto      = require('lib.proto')
-local CHALLENGE_ID   = '1.3'
-local CHALLENGE_NAME = 'The River Ran Backwards'
-local CHOICES = {
-    "Sewage was poisoning the Lake Michigan water supply.",
-    "To keep waste out of the lake -- it was our drinking water.",
-    "Typhoid from river filth was killing people; reverse it away from the lake.",
-    "The Sanitary District reversed it so filth flowed away, not into the lake.",
-    "Chicago drew water from Lake Michigan and needed to protect it.",
-    "The water intake cribs were being contaminated by river sewage.",
-    "To improve river navigation and shipping.",
-    "To prevent flooding in downtown Chicago.",
-    "I'm not certain -- something about the lake.",
-}
-local runner = archetypes.npc(CHALLENGE_ID, {
-    npc_name = "Old Ike",
-    greeting = "Hrmph. Another one. Fine.\n" ..
-               "Tell me: WHY did Chicago reverse\n" ..
-               "the river in 1900?\n" ..
-               "Don't say flooding. I will walk\n" ..
-               "into the river myself.",
-    choices  = CHOICES,
-})
-local state = {
-    phase        = 'intro',   -- intro | npc | done
-    last_buttons = nil,
-}
-local function edge(buttons, last)
-    for _, b in ipairs({'select','cancel','up','down','left','right'}) do
-        if buttons[b] and not (last and last[b]) then return b end
-    end
-    return nil
-end
-local screen = {}
-function screen.begin(ctx)
-    onion.log('screen 1.3: begin')
-    state.phase       = 'intro'
-    state.last_buttons = nil
-    net.request(proto.MsgType.CHALLENGE_BEGIN, {
-        c = CHALLENGE_ID,
-        h = ctx.hardware_id,
-    })
-end
-function screen.update(ctx, dt)
-    local buttons = onion.buttons()
-    local pressed = edge(buttons, state.last_buttons)
-    state.last_buttons = buttons
-    if state.phase == 'intro' then
-        if pressed == 'select' then
-            runner.begin(ctx)
-            state.phase = 'npc'
-        elseif pressed == 'cancel' then
-            return 'done'
-        end
-    elseif state.phase == 'npc' then
-        local result = runner.update(ctx, dt)
-        if result == 'done' then
-            state.phase = 'done'
-        end
-    elseif state.phase == 'done' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-    end
-    return nil
-end
-function screen.render(ctx)
-    if state.phase == 'intro' then
-        onion.clear_display()
-        ui.border()
-        ui.title('ACT 1 — 1.3', 4)
-        ui.divider(18)
-        onion.display_text('DEEPDISH says:', 6, 24,
-            { font = 'small', clear = false })
-        local intro_text =
-            "There's an old engineer by the river.\n" ..
-            "He won't help 'til you prove you know\n" ..
-            "WHY Chicago reversed the river in 1900.\n" ..
-            "Most people can't. Can you, champ?"
-        local lines = ui.wrap_text(intro_text, 38)
-        ui.body_text(lines, 6, 36)
-        ui.divider(ui.H - 22)
-        onion.display_text('[SELECT] Talk to Old Ike', 6, ui.H - 18,
-            { font = 'small', clear = false })
-        onion.display_text('[CANCEL] Leave', 6, ui.H - 8,
-            { font = 'small', clear = false })
-    elseif state.phase == 'npc' then
-        runner.render(ctx)
-    elseif state.phase == 'done' then
-        onion.clear_display()
-        ui.border()
-        ui.title('Old Ike nods.', 20)
-        ui.divider(36)
-        local result_text =
-            "Reversal Map acquired.\n" ..
-            "'Now you know how the city\n" ..
-            "keeps its water clean, champ.'"
-        local lines = ui.wrap_text(result_text, 38)
-        ui.body_text(lines, 6, 44)
-        ui.divider(ui.H - 22)
-        onion.display_text('[SELECT] Continue', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    end
-end
-return screen
-end
-
-package.preload["screens.2_1"] = function(...)
-local archetypes = require('lib.archetypes')
-local ui         = require('lib.ui')
-local net        = require('lib.net')
-local proto      = require('lib.proto')
-local caps       = require('lib.caps')
-local CHALLENGE_ID  = '2.1'
-local JAM_WINDOW_MS = 60000   -- must match beacon config
-local STOP_CODE_HEX   = 'DEAD1A1A'
-local STOP_CODE_BYTES = '\xDE\xAD\x1A\x1A'
-local SUBGHZ_FREQ_MHZ = 433.92
-local state = {
-    phase         = 'intro',  -- intro | jam_waiting | jam_counting | jam_result | combat_active | done
-    intro_text    = '',
-    jam_started   = false,
-    jam_elapsed   = 0,        -- ms elapsed since jam window opened
-    jam_result    = nil,      -- nil | {jammed=bool, relay=bool}
-    jam_message   = '',
-    combat_runner = nil,
-    result_text   = '',
-    passed        = false,
-    last_buttons  = nil,
-    last_tick_ms  = 0,
-}
-local function edge(buttons, last)
-    for _, b in ipairs({'select','cancel','up','down','left','right'}) do
-        if buttons[b] and not (last and last[b]) then return b end
-    end
-    return nil
-end
-local function draw_countdown(elapsed_ms, window_ms)
-    local remaining = math.max(0, window_ms - elapsed_ms)
-    local frac      = remaining / window_ms
-    local bar_w     = math.floor((ui.W - 12) * frac)
-    onion.display_rect(6, ui.H - 12, ui.W - 12, 8, { clear = false, color = 'white', fill = true })
-    if bar_w > 0 then
-        onion.display_rect(6, ui.H - 12, bar_w, 8, { clear = false, color = 'black', fill = true })
-    end
-    local secs = math.floor(remaining / 1000)
-    onion.display_text(secs .. 's', ui.W - 24, ui.H - 14,
-        { font = 'small', clear = false })
-end
-local function do_jam_native()
-    onion.log('2.1: subghz transmit stop code ' .. STOP_CODE_HEX
-        .. ' @ ' .. SUBGHZ_FREQ_MHZ .. ' MHz')
-    local ok, err = onion.subghz_begin({ freq = SUBGHZ_FREQ_MHZ, modulation = 'ook' })
-    if not ok then
-        onion.log('2.1: subghz_begin failed: ' .. tostring(err))
-        return false, tostring(err)
-    end
-    local txok, txerr = onion.subghz_transmit(STOP_CODE_BYTES)
-    onion.subghz_end()  -- always power the radio back down
-    if not txok then
-        onion.log('2.1: subghz_transmit failed: ' .. tostring(txerr))
-        return false, tostring(txerr)
-    end
-    return true, nil
-end
-local function do_jam_relay(ctx)
-    local resp, err = net.request(proto.MsgType.MERCHANT_INPUT, {
-        c   = CHALLENGE_ID,
-        seq = { 'jam_relay' },
-    }, 15000)
-    if err then
-        return nil, err
-    end
-    return resp, nil
-end
-local function start_combat(ctx)
-    state.combat_runner = archetypes.combat(CHALLENGE_ID, {
-        enemy_name   = 'Door Actuator Daemon',
-        enemy_max_hp = 60,
-        op_max_hp    = 100,
-        waves_req    = 1,
-        intro_text   =
-            "Door actuator daemon is FURIOUS, champ. " ..
-            "Three pneumatic doors with attitude problems. Survive this.",
-    })
-    state.combat_runner.begin(ctx)
-end
-local screen = {}
-function screen.begin(ctx)
-    onion.log('screen 2.1: begin')
-    state.phase        = 'intro'
-    state.jam_started  = false
-    state.jam_elapsed  = 0
-    state.jam_result   = nil
-    state.jam_message  = ''
-    state.combat_runner = nil
-    state.result_text  = ''
-    state.passed       = false
-    state.last_buttons = nil
-    state.last_tick_ms = onion.sleep and 0 or 0  -- reset tick reference
-    local resp, err = net.request(proto.MsgType.CHALLENGE_BEGIN, {
-        c = CHALLENGE_ID,
-        h = ctx.hardware_id,
-    })
-    if err then
-        state.intro_text = 'Server error: ' .. err
-    else
-        state.intro_text = (resp and resp.intro)
-            or "Welcome to the Loop, champ. Jam the signal to stop the train."
-    end
-end
-function screen.update(ctx, dt)
-    local buttons = onion.buttons()
-    local pressed = edge(buttons, state.last_buttons)
-    state.last_buttons = buttons
-    if state.phase == 'intro' then
-        if pressed == 'cancel' then
-            return 'done'
-        elseif pressed == 'select' then
-            state.phase = 'jam_waiting'
-        end
-    elseif state.phase == 'jam_waiting' then
-        if pressed == 'cancel' then
-            return 'done'
-        elseif pressed == 'select' then
-            state.jam_elapsed = 0
-            state.jam_started = true
-            state.phase       = 'jam_counting'
-            if caps.subghz then
-                local ok, err = do_jam_native()
-                if not ok then
-                    state.jam_message = 'TX error: ' .. tostring(err)
-                end
-            else
-                state.jam_relay_pending = true
-            end
-        end
-    elseif state.phase == 'jam_counting' then
-        state.jam_elapsed = state.jam_elapsed + (dt or 80)
-        if state.jam_relay_pending then
-            state.jam_relay_pending = false
-            local resp, err = do_jam_relay(ctx)
-            if err then
-                state.jam_message = 'Relay error: ' .. err
-            elseif resp and resp.jammed then
-                state.jam_result  = { jammed = true, relay = true }
-                state.jam_elapsed = resp.elapsed_ms or state.jam_elapsed
-                state.phase       = 'jam_result'
-            else
-                state.jam_message = (resp and resp.message) or 'Relay failed.'
-            end
-        end
-        if state.jam_elapsed >= JAM_WINDOW_MS and state.phase == 'jam_counting' then
-            state.jam_result = { jammed = false }
-            state.phase      = 'jam_result'
-        end
-        if pressed == 'cancel' then
-            state.jam_result = { jammed = false }
-            state.phase      = 'jam_result'
-        end
-        if caps.subghz and state.jam_elapsed % 5000 < (dt or 80) then
-            local resp, _ = net.request(proto.MsgType.MERCHANT_INPUT, {
-                c   = CHALLENGE_ID,
-                seq = { 'jam_poll' },
-            }, 4000)
-            if resp and resp.jammed then
-                state.jam_result = { jammed = true, relay = false }
-                state.phase      = 'jam_result'
-            end
-        end
-    elseif state.phase == 'jam_result' then
-        if pressed == 'select' or pressed == 'cancel' then
-            local jam = state.jam_result
-            if jam and jam.jammed then
-                local resp, err = net.request(proto.MsgType.MERCHANT_INPUT, {
-                    c   = CHALLENGE_ID,
-                    seq = { 'phase:jam', 'jammed:true',
-                            jam.relay and 'relay:true' or 'relay:false' },
-                }, 8000)
-                if err then
-                    state.result_text = 'Server error: ' .. err
-                    state.phase       = 'done'
-                else
-                    start_combat(ctx)
-                    state.phase = 'combat_active'
-                end
-            else
-                state.result_text = jam and
-                    "Window closed. The train kept going. Try again, pal." or
-                    "Jam attempt failed. The doors remain hostile."
-                state.phase       = 'done'
-            end
-        end
-    elseif state.phase == 'combat_active' then
-        if state.combat_runner then
-            local result = state.combat_runner.update(ctx, dt)
-            if result == 'done' then
-                local resp, err = net.request(proto.MsgType.MERCHANT_INPUT, {
-                    c   = CHALLENGE_ID,
-                    seq = { 'phase:combat', 'submit:true' },
-                }, 8000)
-                if err then
-                    state.result_text = 'Server error: ' .. err
-                else
-                    state.passed      = resp and resp.passed or false
-                    state.result_text = (resp and resp.message) or
-                        (state.passed
-                            and "Doors open. Transit Pass unlocked. 90 Onions earned."
-                            or  "Defeated. The actuator daemon wins this round.")
-                end
-                state.phase = 'done'
-            end
-        end
-    elseif state.phase == 'done' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-    end
-    return nil
-end
-function screen.render(ctx)
-    onion.clear_display()
-    ui.border()
-    if state.phase == 'intro' then
-        ui.title("THE LOOP", 4)
-        ui.divider(18)
-        local lines = ui.wrap_text(state.intro_text, 38)
-        ui.body_text(lines, 6, 24)
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] Begin  [CANCEL] Leave', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'jam_waiting' then
-        ui.title("L CONTROL JAM", 4)
-        ui.divider(18)
-        local cap_label = caps.subghz
-            and "Sub-GHz ready (433.92 MHz)"
-            or  "No sub-GHz: relay via beacon"
-        onion.display_text(cap_label, 6, 24, { font = 'small', clear = false })
-        local lines = ui.wrap_text(
-            "60-second window. Transmit stop code to halt the train. " ..
-            "Then survive the door actuator.", 38)
-        ui.body_text(lines, 6, 38)
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] Start jam  [CANCEL] Leave', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'jam_counting' then
-        ui.title("JAMMING SIGNAL", 4)
-        ui.divider(18)
-        local src = caps.subghz and "433.92 MHz TX active" or "Beacon relay active"
-        onion.display_text(src, 6, 24, { font = 'small', clear = false })
-        if state.jam_message ~= '' then
-            local lines = ui.wrap_text(state.jam_message, 38)
-            ui.body_text(lines, 6, 38)
-        else
-            onion.display_text("Waiting for train to receive stop code...", 6, 38,
-                { font = 'small', clear = false })
-        end
-        onion.display_text('[CANCEL] Abort', 6, ui.H - 24,
-            { font = 'small', clear = false })
-        draw_countdown(state.jam_elapsed, JAM_WINDOW_MS)
-    elseif state.phase == 'jam_result' then
-        local jam = state.jam_result
-        if jam and jam.jammed then
-            ui.title("SIGNAL JAMMED", 20)
-            local lines = ui.wrap_text(
-                "Train stopped! Now the doors are fighting back. " ..
-                "Brace yourself.", 38)
-            ui.body_text(lines, 6, 50)
-        else
-            ui.title("JAM FAILED", 20)
-            local lines = ui.wrap_text(
-                "Window closed. Train kept moving. " ..
-                "That's a no from me, chief.", 38)
-            ui.body_text(lines, 6, 50)
-        end
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] Continue', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'combat_active' then
-        if state.combat_runner then
-            state.combat_runner.render(ctx)
-        end
-    elseif state.phase == 'done' then
-        local icon = state.passed and "LOOP CLEARED" or "LOOP BLOCKED"
-        ui.title(icon, 20)
-        local lines = ui.wrap_text(state.result_text, 38)
-        ui.body_text(lines, 6, 48)
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] OK', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    end
-end
-return screen
-end
-
-package.preload["screens.2_2"] = function(...)
-local archetypes = require('lib.archetypes')
-local ui         = require('lib.ui')
-local net        = require('lib.net')
-local proto      = require('lib.proto')
-local CHALLENGE_ID = '2.2'
-local TIERS = {
-    {
-        name     = 'Local Route',
-        item     = 'Sorting Sprocket',
-        payout   = '30',
-        seq_len  = 3,
-        hint     = 'ZIP -> carrier route. 3 inputs.',
-    },
-    {
-        name     = 'Regional Hub',
-        item     = 'Conveyor Belt Frag',
-        payout   = '60',
-        seq_len  = 4,
-        hint     = "ZIP+4 -> SCF (O'Hare). 4 inputs.",
-    },
-    {
-        name     = 'Bridge Override Kit',
-        item     = 'Bridge Override Schematic',
-        payout   = '110',
-        seq_len  = 5,
-        hint     = 'NDC dispatch. 5 inputs.',
-    },
-}
-local state = {
-    phase         = 'intro',    -- intro | tier_select | entering | waiting | result | lesson | done
-    message       = '',         -- last server message / error
-    lesson        = '',         -- routing lesson text from successful trade
-    selected_tier = 1,          -- currently highlighted tier (1-3)
-    sequence      = {},         -- buttons entered so far during combo entry
-    last_buttons  = nil,
-    passed        = false,
-    locked        = false,       -- machine locked due to too many wrong attempts
-}
-local function edge(buttons, last)
-    for _, b in ipairs({'select', 'cancel', 'up', 'down', 'left', 'right'}) do
-        if buttons[b] and not (last and last[b]) then return b end
-    end
-    return nil
-end
-local BTN_LABELS = { up='U', down='D', left='L', right='R', select='SEL', cancel='X' }
-local function seq_str()
-    local parts = {}
-    for _, b in ipairs(state.sequence) do
-        parts[#parts + 1] = (BTN_LABELS[b] or b)
-    end
-    return table.concat(parts, '-')
-end
-local function submit_sequence()
-    state.phase = 'waiting'
-    local resp, err = net.request(proto.MsgType.MERCHANT_INPUT, {
-        c   = CHALLENGE_ID,
-        seq = state.sequence,
-    }, 12000)
-    if err then
-        state.message = 'Network error: ' .. err
-        state.phase   = 'result'
-        return
-    end
-    state.passed  = resp and resp.passed or false
-    state.message = (resp and resp.message) or (state.passed and 'Trade accepted!' or 'Wrong sequence.')
-    state.lesson  = (resp and resp.lesson)  or ''
-    if state.message and state.message:find('locked', 1, true) then
-        state.locked = true
-    end
-    if state.passed and state.lesson ~= '' then
-        state.phase = 'lesson'
-    else
-        state.phase = 'result'
-    end
-end
-local screen = {}
-function screen.begin(ctx)
-    onion.log('screen 2.2: begin (sorting machine)')
-    state.phase         = 'intro'
-    state.message       = ''
-    state.lesson        = ''
-    state.selected_tier = 1
-    state.sequence      = {}
-    state.last_buttons  = nil
-    state.passed        = false
-    state.locked        = false
-    local resp, err = net.request(proto.MsgType.CHALLENGE_BEGIN, {
-        c = CHALLENGE_ID,
-        h = ctx.hardware_id,
-    })
-    if err then
-        state.message = 'Begin error: ' .. err
-        return
-    end
-    if resp and resp.intro then
-        state.message = resp.intro
-    end
-end
-function screen.update(ctx, dt)
-    local buttons = onion.buttons()
-    local pressed = edge(buttons, state.last_buttons)
-    state.last_buttons = buttons
-    if state.phase == 'intro' then
-        if pressed == 'cancel' then
-            return 'done'
-        elseif pressed == 'select' or pressed == 'down' or pressed == 'up' then
-            state.phase = 'tier_select'
-        end
-    elseif state.phase == 'tier_select' then
-        if pressed == 'cancel' then
-            return 'done'
-        elseif pressed == 'up' then
-            state.selected_tier = math.max(1, state.selected_tier - 1)
-        elseif pressed == 'down' then
-            state.selected_tier = math.min(#TIERS, state.selected_tier + 1)
-        elseif pressed == 'select' then
-            if state.locked then
-                state.message = 'Machine locked. Too many misroutes.'
-                state.phase   = 'result'
-            else
-                state.sequence = {}
-                state.phase    = 'entering'
-            end
-        end
-    elseif state.phase == 'entering' then
-        local tier = TIERS[state.selected_tier]
-        if pressed == 'cancel' then
-            if #state.sequence > 0 then
-                state.sequence[#state.sequence] = nil
-            else
-                state.phase = 'tier_select'
-            end
-        elseif pressed then
-            state.sequence[#state.sequence + 1] = pressed
-            if #state.sequence >= tier.seq_len then
-                submit_sequence()
-            end
-        end
-    elseif state.phase == 'waiting' then
-    elseif state.phase == 'result' then
-        if pressed == 'select' or pressed == 'cancel' then
-            if state.locked or (pressed == 'cancel' and not state.passed) then
-                return 'done'
-            elseif state.passed then
-                state.phase = 'tier_select'  -- can attempt another tier
-            else
-                state.sequence = {}
-                state.phase    = 'entering'  -- retry the same tier
-            end
-        end
-    elseif state.phase == 'lesson' then
-        if pressed == 'select' or pressed == 'cancel' then
-            state.phase = 'tier_select'  -- back to tier menu after reading
-        end
-    elseif state.phase == 'done' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-    end
-    return nil
-end
-function screen.render(ctx)
-    onion.clear_display()
-    ui.border()
-    if state.phase == 'intro' then
-        ui.title('USPS SORTING', 6)
-        ui.divider(20)
-        local intro = state.message ~= '' and state.message
-            or "Enter routing sequences to trade for parts. Wrong codes cost Onions."
-        local lines = ui.wrap_text(intro, 38)
-        ui.body_text(lines, 6, 26)
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] Enter  [CANCEL] Leave', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'tier_select' then
-        ui.title('=[ SORTING MACHINE ]=', 4)
-        local bal = (ctx.operative and ctx.operative.onions) or '?'
-        onion.display_text('O:' .. tostring(bal), ui.W - 40, 4,
-            { font = 'small', clear = false })
-        ui.divider(18)
-        for i, tier in ipairs(TIERS) do
-            local iy  = 22 + (i - 1) * 22
-            local pre = (i == state.selected_tier) and '> ' or '  '
-            local row = string.format('%s%-20s +%sO', pre, tier.name, tier.payout)
-            local fn  = (i == state.selected_tier) and 'bold' or 'small'
-            onion.display_text(row, 4, iy, { font = fn, clear = false })
-        end
-        local hint_y = 22 + #TIERS * 22
-        local sel_hint = TIERS[state.selected_tier].hint
-        ui.divider(hint_y)
-        onion.display_text(sel_hint, 6, hint_y + 4, { font = 'small', clear = false })
-        ui.divider(ui.H - 20)
-        onion.display_text('[UP/DN] Scroll  [SEL] Trade  [CANCEL] Leave', 4, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'entering' then
-        local tier = TIERS[state.selected_tier]
-        ui.title(tier.name:upper(), 6)
-        ui.divider(20)
-        onion.display_text(tier.hint, 6, 26, { font = 'small', clear = false })
-        onion.display_text(
-            string.format('Sequence (%d/%d):', #state.sequence, tier.seq_len),
-            6, 46, { font = 'small', clear = false })
-        local display_seq = seq_str()
-        if display_seq == '' then display_seq = '---' end
-        ui.title(display_seq, 70)
-        ui.divider(ui.H - 30)
-        onion.display_text('[U/D/L/R/SEL] Input  [CANCEL] Backspace', 4, ui.H - 26,
-            { font = 'small', clear = false })
-        onion.display_text('[CANCEL when empty] Back', 4, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'waiting' then
-        ui.title('PROCESSING...', 70)
-        onion.display_text('Routing sequence submitted.', 6, 96,
-            { font = 'small', clear = false })
-    elseif state.phase == 'result' then
-        local icon = state.passed and '[ TRADE OK ]' or '[ MISROUTE ]'
-        ui.title(icon, 20)
-        ui.divider(36)
-        local lines = ui.wrap_text(state.message, 40)
-        ui.body_text(lines, 6, 42)
-        ui.divider(ui.H - 20)
-        local hint = state.locked
-            and '[CANCEL] Leave'
-            or (state.passed and '[SEL] More trades  [CANCEL] Leave'
-                             or '[SEL] Retry  [CANCEL] Leave')
-        onion.display_text(hint, 6, ui.H - 14, { font = 'small', clear = false })
-    elseif state.phase == 'lesson' then
-        ui.title('ROUTING LESSON', 6)
-        ui.divider(20)
-        local lines = ui.wrap_text(state.lesson, 38)
-        ui.body_text(lines, 6, 26)
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] Got it', 6, ui.H - 14, { font = 'small', clear = false })
-    elseif state.phase == 'done' then
-        ui.splash('Sort\nComplete', 'Parts acquired', '[SELECT] OK')
-    end
-end
-return screen
-end
-
-package.preload["screens.2_3"] = function(...)
-local archetypes = require('lib.archetypes')
-local ui         = require('lib.ui')
-local net        = require('lib.net')
-local proto      = require('lib.proto')
-local caps       = require('lib.caps')
-local MT = proto.MsgType
-local CHALLENGE_ID  = '2.3'
-local CHALLENGE_NAME = 'Bascule Standoff'
-local state = {
-    phase        = 'intro',  -- intro | voice_prompt | listening | voice_wait |
-    message      = '',
-    last_buttons = nil,
-    attempt_id   = nil,      -- returned by server on CHALLENGE_BEGIN
-    voice_passed = false,
-    combat_runner = nil,     -- combat archetype runner (created after voice pass)
-}
-local function edge(buttons, last)
-    for _, b in ipairs({ 'select', 'cancel', 'up', 'down', 'left', 'right' }) do
-        if buttons[b] and not (last and last[b]) then return b end
-    end
-    return nil
-end
-local function draw_waiting(label)
-    onion.clear_display()
-    ui.title('Please wait...', 70)
-    local lx = math.max(4, math.floor((ui.W - #label * 6) / 2))
-    onion.display_text(label, lx, 96, { font = 'small', clear = false })
-end
-local function capture_voice_energy(ms)
-    if not caps.voice then return nil end
-    local ok = onion.sound_mic_begin({ sample_rate = 16000 })
-    if not ok then return nil end
-    local total_rms, total_peak, n = 0, 0, 0
-    local remaining = ms or 3000
-    while remaining > 0 do
-        local slice = math.min(remaining, 1000)
-        local lvl = onion.sound_mic_level(slice)
-        if lvl then
-            total_rms = total_rms + (lvl.rms or 0)
-            if (lvl.peak or 0) > total_peak then total_peak = lvl.peak end
-            n = n + 1
-        end
-        remaining = remaining - slice
-    end
-    onion.sound_mic_end()
-    if n == 0 then return nil end
-    return { rms = math.floor(total_rms / n), peak = total_peak }
-end
-local function submit_voice(transcript, ref, energy)
-    state.phase = 'voice_wait'
-    local body = {
-        c   = CHALLENGE_ID,
-        t   = transcript,
-        ref = ref,
-        v   = energy,   -- { rms, peak } when an on-badge mic was used
+function identity.addresses()
+    local out = {}
+    local candidates = {
+        wallet = { 'wallet_address', 'solana_address', 'address' },
+        publicKey = { 'public_key', 'wallet_public_key', 'solana_public_key' },
     }
-    local resp, err = net.request(MT.VOICE_CAPTURE_SUBMIT, body, 15000)
-    if err then
-        state.message = 'Network error: ' .. err
-        state.phase   = 'voice_fail'
-        return
-    end
-    if resp and resp.passed == false and resp.continued then
-        if resp.flags and resp.flags['2.3:voice_cleared'] then
-            state.message    = resp.message or 'Sequence accepted. Fight time.'
-            state.voice_passed = true
-            state.phase      = 'voice_pass'
-        else
-            state.message = resp.message or 'Wrong sequence. Try again.'
-            state.phase   = 'voice_fail'
-        end
-    elseif resp and resp.passed then
-        state.message    = resp.message or 'Accepted.'
-        state.voice_passed = true
-        state.phase      = 'voice_pass'
-    else
-        state.message = (resp and resp.message) or 'Sequence incorrect. Try again.'
-        state.phase   = 'voice_fail'
-    end
-end
-local function make_combat_runner()
-    return archetypes.combat(CHALLENGE_ID, {
-        enemy_name   = 'Bridge Tender Construct',
-        enemy_max_hp = 60,
-        op_max_hp    = 100,
-        waves_req    = 1,
-        intro_text   =
-            "Counterweight locked. Leaf level. Now the construct is fighting back.\n" ..
-            "One wave. Make it count, champ.",
-    })
-end
-local screen = {}
-function screen.begin(ctx)
-    onion.log('screen 2.3: begin')
-    state.phase        = 'intro'
-    state.message      = ''
-    state.voice_passed = false
-    state.combat_runner = nil
-    state.attempt_id   = nil
-    draw_waiting('Approaching bridge...')
-    local resp, err = net.request(MT.CHALLENGE_BEGIN, {
-        c = CHALLENGE_ID,
-        h = ctx.hardware_id,
-    })
-    if err then
-        state.message = 'Server error: ' .. err
-        state.phase   = 'intro'
-        return
-    end
-    state.attempt_id = resp and resp.attemptId or nil
-    state.message    = (resp and resp.intro) or
-        "The bascule bridge is stuck mid-raise, pal. " ..
-        "You need the Reversal Map clues. Speak the sequence when ready."
-    state.phase = 'intro'
-end
-function screen.update(ctx, dt)
-    local buttons = onion.buttons()
-    local pressed = edge(buttons, state.last_buttons)
-    state.last_buttons = buttons
-    if state.phase == 'intro' then
-        if pressed == 'select' then
-            state.phase = 'voice_prompt'
-        elseif pressed == 'cancel' then
-            return 'done'
-        end
-    elseif state.phase == 'voice_prompt' then
-        if pressed == 'cancel' then
-            return 'done'
-        elseif pressed == 'select' then
-            if caps.voice then
-                state.phase = 'listening'
-                onion.clear_display()
-                ui.voice_screen('listening',
-                    "Speak: lock traffic, release counterweight, lower leaf, secure locks.")
-                local energy = capture_voice_energy(3000)
-                submit_voice('', nil, energy)
-            else
-                state.phase = 'listening'
-                submit_voice('', nil)
-            end
-        end
-    elseif state.phase == 'listening' or state.phase == 'voice_wait' then
-    elseif state.phase == 'voice_fail' then
-        if pressed == 'select' then
-            state.phase = 'voice_prompt'
-        elseif pressed == 'cancel' then
-            return 'done'
-        end
-    elseif state.phase == 'voice_pass' then
-        if pressed == 'select' then
-            state.combat_runner = make_combat_runner()
-            state.combat_runner.begin(ctx)
-            state.phase = 'combat_active'
-        elseif pressed == 'cancel' then
-            return 'done'
-        end
-    elseif state.phase == 'combat_active' then
-        if state.combat_runner then
-            local result = state.combat_runner.update(ctx, dt)
-            if result == 'done' then
-                state.phase = 'done'
-            end
-        end
-    elseif state.phase == 'done' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-    end
-    return nil
-end
-function screen.render(ctx)
-    onion.clear_display()
-    if state.phase == 'intro' then
-        ui.border()
-        ui.title('BASCULE STANDOFF', 4)
-        ui.divider(18)
-        local lines = ui.wrap_text(state.message, 38)
-        ui.body_text(lines, 6, 26)
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] Begin  [CANCEL] Leave', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'voice_prompt' then
-        ui.border()
-        ui.title('SPEAK THE SEQUENCE', 4)
-        ui.divider(18)
-        onion.display_text('(Use your Reversal Map)', 6, 24,
-            { font = 'small', clear = false })
-        ui.divider(32)
-        onion.display_text('1. Lock traffic',          6, 38, { font = 'small', clear = false })
-        onion.display_text('2. Release counterweight', 6, 50, { font = 'small', clear = false })
-        onion.display_text('3. Lower leaf',             6, 62, { font = 'small', clear = false })
-        onion.display_text('4. Secure locks',           6, 74, { font = 'small', clear = false })
-        ui.divider(ui.H - 20)
-        local hint = caps.voice and '[SELECT] Record  [CANCEL] Back'
-                                 or '[SELECT] Signal ready  [CANCEL] Back'
-        onion.display_text(hint, 6, ui.H - 14, { font = 'small', clear = false })
-    elseif state.phase == 'listening' then
-        ui.voice_screen('listening', 'Speak the sequence now...')
-    elseif state.phase == 'voice_wait' then
-        draw_waiting('Analysing sequence...')
-    elseif state.phase == 'voice_fail' then
-        ui.border()
-        ui.title('[ REJECTED ]', 14)
-        ui.divider(30)
-        local lines = ui.wrap_text(state.message, 38)
-        ui.body_text(lines, 6, 38)
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] Retry  [CANCEL] Leave', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'voice_pass' then
-        ui.border()
-        ui.title('SEQUENCE ACCEPTED', 6)
-        ui.divider(20)
-        local lines = ui.wrap_text(state.message, 38)
-        ui.body_text(lines, 6, 28)
-        onion.display_text('  /|  -> __|__', 6, ui.H - 32,
-            { font = 'small', clear = false })
-        onion.display_text('Bridge leaf lowering...', 6, ui.H - 20,
-            { font = 'small', clear = false })
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] Fight  [CANCEL] Leave', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'combat_active' then
-        if state.combat_runner then
-            state.combat_runner.render(ctx)
-        end
-    elseif state.phase == 'done' then
-        ui.border()
-        ui.title('BRIDGE LOWERED', 14)
-        ui.divider(30)
-        onion.display_text('River Access granted.', 6, 38,
-            { font = 'small', clear = false })
-        onion.display_text('+110 Onions', 6, 50, { font = 'small', clear = false })
-        ui.divider(ui.H - 22)
-        onion.display_text('DEEPDISH: "Ya earned it, I guess."', 6, ui.H - 18,
-            { font = 'small', clear = false })
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] Leave', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    end
-end
-return screen
-end
-
-package.preload["screens.3_1"] = function(...)
-local archetypes = require('lib.archetypes')
-local ui         = require('lib.ui')
-local net        = require('lib.net')
-local proto      = require('lib.proto')
-local caps       = require('lib.caps')
-local CHALLENGE_ID   = '3.1'
-local CHALLENGE_NAME = 'Deep Tunnel Descent'
-local TTL_MS         = 180000   -- must match beacon config + server TTL_SECONDS
-local WAVES_REQ      = 3
-local WAVE_TAUNTS = {
-    "3.5 billion gallons per inch of rain. ALL comes here. *water rises*",
-    "TARP took 40 years: 109 miles, 3 reservoirs. I'm flooding all of it.",
-    "Combined sewer overflow = why Deep Tunnel exists. I'm undoing that now.",
-}
-local state = {
-    phase         = 'intro',    -- intro | combat_active | done
-    runner        = nil,        -- combat archetype runner (lazy-built)
-    message       = '',
-    last_buttons  = nil,
-    elapsed_ms    = 0,
-    timer_expired = false,
-    wave_cleared  = 0,
-    passed        = false,
-    outcome_msg   = '',
-}
-local function edge(buttons, last)
-    for _, b in ipairs({'select','cancel','up','down','left','right'}) do
-        if buttons[b] and not (last and last[b]) then return b end
-    end
-    return nil
-end
-local function fmt_timer(remaining_ms)
-    local s = math.max(0, math.floor(remaining_ms / 1000))
-    return string.format('%02d:%02d', math.floor(s / 60), s % 60)
-end
-local function make_runner()
-    return archetypes.combat(CHALLENGE_ID, {
-        enemy_name   = 'THE RISING WATER',
-        enemy_max_hp = 60,
-        op_max_hp    = 90,
-        waves_req    = WAVES_REQ,
-        intro_text   =
-            "TARP is flooding. 109 miles of tunnel, 300 ft underground. " ..
-            "Reach the beacon before the water reaches YOU.",
-    })
-end
-local function draw_water_bar(fill_fraction)
-    local bar_h = math.floor(fill_fraction * (ui.H - 40))
-    if bar_h < 2 then return end
-    onion.display_rect(0, ui.H - bar_h, ui.W, bar_h,
-        { color = 'black', fill = true, clear = false })
-    if bar_h >= 10 then
-        onion.display_text('WATER LVL', 6, ui.H - bar_h + 2,
-            { font = 'small', color = 'white', clear = false })
-    end
-end
-local function draw_timer(remaining_ms)
-    local label = fmt_timer(remaining_ms)
-    local x = ui.W - (#label * 6) - 4
-    onion.display_text(label, x, 4,
-        { font = 'small', color = 'black', clear = false })
-end
-local screen = {}
-function screen.begin(ctx)
-    onion.log('screen 3.1: begin — Deep Tunnel Descent')
-    state.phase         = 'intro'
-    state.elapsed_ms    = 0
-    state.timer_expired = false
-    state.wave_cleared  = 0
-    state.passed        = false
-    state.outcome_msg   = ''
-    state.runner        = nil
-    local resp, err = net.request(proto.MsgType.CHALLENGE_BEGIN, {
-        c = CHALLENGE_ID,
-        h = ctx.hardware_id,
-    })
-    if err then
-        onion.log('3.1 begin error: ' .. err)
-        state.message = 'Connection error. Move closer to beacon.'
-        return
-    end
-    state.message = (resp and resp.intro) or
-        "TARP is flooding. 109 miles of tunnel, 300 ft underground. " ..
-        "Reach the beacon before the water reaches YOU."
-end
-function screen.update(ctx, dt)
-    local buttons = onion.buttons()
-    local pressed = edge(buttons, state.last_buttons)
-    state.last_buttons = buttons
-    if state.phase == 'intro' then
-        if pressed == 'select' then
-            state.runner = make_runner()
-            state.runner.begin(ctx)
-            state.phase    = 'combat_active'
-            state.elapsed_ms = 0
-        elseif pressed == 'cancel' then
-            return 'done'
-        end
-    elseif state.phase == 'combat_active' then
-        state.elapsed_ms = state.elapsed_ms + (dt or 80)
-        if state.elapsed_ms >= TTL_MS and not state.timer_expired then
-            state.timer_expired = true
-            state.passed        = false
-            state.outcome_msg   =
-                "Ran out of time. TARP fills fast during storm events. " ..
-                "Commit or drown, pal."
-            state.phase = 'done'
-            return nil
-        end
-        local result = state.runner.update(ctx, dt)
-        if result == 'done' then
-            local runner_status = state.runner.last_status or 'won'
-            if runner_status == 'won' then
-                state.passed      = true
-                state.outcome_msg =
-                    "You made it. Here's your Sump Pump. " ..
-                    "And Fragment 1. Don't say I never taught you anything, champ."
-                state.wave_cleared = WAVES_REQ
-            else
-                state.passed      = false
-                state.outcome_msg =
-                    "Water got ya. That's what happens when you " ..
-                    "disrespect the infrastructure. Try again."
-            end
-            state.phase = 'done'
-        else
-            if state.runner.current_wave then
-                state.wave_cleared = math.max(0,
-                    (state.runner.current_wave or 1) - 1)
-            end
-        end
-    elseif state.phase == 'done' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-    end
-    return nil
-end
-function screen.render(ctx)
-    if state.phase == 'intro' then
-        onion.clear_display()
-        ui.border()
-        ui.title('DEEP TUNNEL', 4)
-        ui.divider(18)
-        onion.display_text('ACT 3 — TARP IS FLOODING', 6, 22,
-            { font = 'small', clear = false })
-        local lines = ui.wrap_text(state.message, 38)
-        ui.body_text(lines, 6, 34)
-        draw_water_bar(0.08)
-        ui.divider(ui.H - 28)
-        onion.display_text('[SELECT] Descend  [CANCEL] Stay Safe', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'combat_active' then
-        onion.clear_display()
-        state.runner.render(ctx)
-        local fill = (state.wave_cleared / WAVES_REQ) * 0.55 + 0.05
-        draw_water_bar(fill)
-        local remaining = math.max(0, TTL_MS - state.elapsed_ms)
-        draw_timer(remaining)
-        local wave_disp = (state.runner.current_wave or 1)
-        onion.display_text(
-            'W ' .. wave_disp .. '/' .. WAVES_REQ,
-            6, 4,
-            { font = 'small', clear = false })
-    elseif state.phase == 'done' then
-        onion.clear_display()
-        ui.border()
-        if state.passed then
-            ui.title('SURFACE REACHED', 10)
-            ui.divider(24)
-        else
-            local label = state.timer_expired and 'TIME\'S UP' or 'SUBMERGED'
-            ui.title(label, 20)
-            ui.divider(24)
-        end
-        local lines = ui.wrap_text(state.outcome_msg, 38)
-        ui.body_text(lines, 6, 32)
-        if state.passed then
-            onion.display_text('Sump Pump + Fragment 1 unlocked!', 6, ui.H - 26,
-                { font = 'small', clear = false })
-        end
-        ui.divider(ui.H - 18)
-        onion.display_text('[SELECT] Continue', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    end
-end
-return screen
-end
-
-package.preload["screens.3_2"] = function(...)
-local archetypes = require('lib.archetypes')
-local ui         = require('lib.ui')
-local net        = require('lib.net')
-local proto      = require('lib.proto')
-local caps       = require('lib.caps')
-local CHALLENGE_ID   = '3.2'
-local CHALLENGE_NAME = 'The Freight Tunnels'
-local NPC_NAME       = 'Maintenance Bot MK-1899'
-local MAX_TURNS      = 6
-local CHOICES = {
-    'The tunnels are not on modern infra maps.',
-    'Old abandoned conduits already connect downtown.',
-    'Nobody watches forgotten infrastructure.',
-    'Laying new fiber would be detected; old tunnels would not.',
-    'The city lost track of them — invisible to detection.',
-    'Pre-existing, unmapped routes for hidden data.',
-    'Because they are underground.',
-    'To hide from city grid monitoring systems.',
-}
-local state = {
-    phase        = 'init',     -- init | gating_fail | intro | running | done_pass | done_fail
-    runner       = nil,        -- NPC archetype runner
-    turn         = 0,          -- dialogue turns taken
-    session_id   = nil,        -- storyteller session id
-    transcript   = {},         -- { role, content } array passed back on each turn
-    message      = '',         -- message for splash screens
-    last_buttons = nil,
-}
-local function edge(buttons, last)
-    for _, b in ipairs({'select','cancel','up','down','left','right'}) do
-        if buttons[b] and not (last and last[b]) then return b end
-    end
-    return nil
-end
-local function make_npc_runner()
-    local runner = archetypes.npc(CHALLENGE_ID, {
-        npc_name = NPC_NAME,
-        greeting =
-            "HALT. Authorized personnel only.\n" ..
-            "WHY would an AI hide fiber in these tunnels?\n" ..
-            "Reason it out, Operative.",
-        choices  = CHOICES,
-    })
-    return runner
-end
-local screen = {}
-function screen.begin(ctx)
-    onion.log('screen 3.2: begin')
-    state.phase      = 'init'
-    state.turn       = 0
-    state.session_id = nil
-    state.transcript = {}
-    state.message    = ''
-    state.runner     = nil
-    local has_fragment1 = false
-    if ctx.operative and ctx.operative.inventory then
-        for _, id in ipairs(ctx.operative.inventory) do
-            if id == 'prompt_fragment_1' then
-                has_fragment1 = true
+    for label, names in pairs(candidates) do
+        for _, name in ipairs(names) do
+            local value = as_nonempty_string(call0(name))
+            if value then
+                out[label] = value
                 break
             end
         end
     end
-    if not has_fragment1 then
-        state.phase   = 'gating_fail'
-        state.message =
-            "DEEPDISH: You haven't earned access yet, champ.\n" ..
-            "Find Prompt Fragment #1 in the Deep Tunnel\n" ..
-            "before poking around down here."
-        return
+    local profile = call0('profile')
+    if type(profile) == 'table' then
+        for _, key in ipairs({ 'wallet', 'address', 'publicKey', 'username' }) do
+            if as_nonempty_string(profile[key]) and not out[key] then
+                out[key] = profile[key]
+            end
+        end
     end
-    local resp, err = net.request(proto.MsgType.CHALLENGE_BEGIN, {
-        c = CHALLENGE_ID,
-        h = ctx.hardware_id,
-    })
-    if err then
-        state.phase   = 'gating_fail'
-        state.message = 'Server error: ' .. tostring(err)
-        return
-    end
-    local intro_text = (resp and resp.intro) or
-        "HALT. Authorized personnel only.\n" ..
-        "I am Maintenance Bot MK-1899.\n" ..
-        "Tell me: WHY would an AI hide its fiber\n" ..
-        "optic conduits in these tunnels?\n" ..
-        "[SELECT] Negotiate  [CANCEL] Leave"
-    state.message = intro_text
-    state.phase   = 'intro'
-    state.runner  = make_npc_runner()
-    state.runner.begin(ctx)
+    return out
 end
-function screen.update(ctx, dt)
-    local buttons = onion.buttons()
-    local pressed = edge(buttons, state.last_buttons)
-    state.last_buttons = buttons
-    if state.phase == 'gating_fail' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-        return nil
-    end
-    if state.phase == 'intro' then
-        if pressed == 'select' then
-            state.phase = 'running'
-        elseif pressed == 'cancel' then
-            return 'done'
-        end
-        return nil
-    end
-    if state.phase == 'running' then
-        local result = state.runner.update(ctx, dt)
-        if result == 'done' then
-            state.phase = 'done_pass'  -- optimistic; result screen refines on reward
-            return nil
-        end
-        return nil
-    end
-    if state.phase == 'done_pass' or state.phase == 'done_fail' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-        return nil
+function identity.sign_capability()
+    for _, spec in ipairs({
+        { name = 'sign_message', alg = 'firmware' },
+        { name = 'wallet_sign',  alg = 'solana' },
+        { name = 'se_sign',      alg = 'ed25519' },
+    }) do
+        if type(onion[spec.name]) == 'function' then return spec end
     end
     return nil
 end
-function screen.render(ctx)
-    if state.phase == 'gating_fail' then
-        onion.clear_display()
-        ui.border()
-        ui.title('ACCESS DENIED', 20)
-        local lines = ui.wrap_text(state.message, 38)
-        ui.body_text(lines, 6, 44)
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT/CANCEL] Leave', 6, ui.H - 14,
-            { font = 'small', clear = false })
-        return
-    end
-    if state.phase == 'intro' then
-        onion.clear_display()
-        ui.border()
-        ui.title('THE FREIGHT TUNNELS', 4)
-        ui.divider(18)
-        onion.display_text('62 mi of tunnels. Forgotten since 1959.', 4, 24,
-            { font = 'small', clear = false })
-        onion.display_text('Now DEEPDISH\'s data backbone.', 4, 36,
-            { font = 'small', clear = false })
-        ui.divider(50)
-        onion.display_text('Bot MK-1899 blocks your path.', 4, 56,
-            { font = 'small', clear = false })
-        local msg_lines = ui.wrap_text(
-            'WHY would an AI hide fiber in these tunnels?', 38)
-        ui.body_text(msg_lines, 4, 70)
-        ui.divider(ui.H - 22)
-        onion.display_text('[SELECT] Negotiate  [CANCEL] Leave', 4, ui.H - 14,
-            { font = 'small', clear = false })
-        return
-    end
-    if state.phase == 'running' then
-        if state.runner then
-            state.runner.render(ctx)
-        else
-            ui.clear()
-            ui.title('ERROR: no runner', 80)
-        end
-        return
-    end
-    if state.phase == 'done_pass' then
-        onion.clear_display()
-        ui.border()
-        ui.title('[ TUNNEL OPEN ]', 20)
-        ui.divider(38)
-        onion.display_text('Prompt Fragment #2 unlocked.', 6, 46,
-            { font = 'small', clear = false })
-        onion.display_text('Conduit Map acquired.', 6, 58,
-            { font = 'small', clear = false })
-        onion.display_text('+100 Onions', 6, 70,
-            { font = 'small', clear = false })
-        ui.divider(ui.H - 22)
-        onion.display_text('LESSON: forgotten infra = hidden attack surface', 4, ui.H - 32,
-            { font = 'small', clear = false })
-        onion.display_text('[SELECT] Continue', 6, ui.H - 14,
-            { font = 'small', clear = false })
-        return
-    end
-    if state.phase == 'done_fail' then
-        onion.clear_display()
-        ui.border()
-        ui.title('[ ACCESS DENIED ]', 20)
-        ui.divider(38)
-        local lines = ui.wrap_text(
-            'DEEPDISH: Come back when you understand\nwhy forgotten tunnels matter, champ.', 38)
-        ui.body_text(lines, 6, 46)
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] Leave', 6, ui.H - 14,
-            { font = 'small', clear = false })
-        return
-    end
+function identity.can_sign()
+    return identity.sign_capability() ~= nil
 end
-return screen
-end
-
-package.preload["screens.3_3"] = function(...)
-local archetypes = require('lib.archetypes')
-local ui         = require('lib.ui')
-local net        = require('lib.net')
-local proto      = require('lib.proto')
-local caps       = require('lib.caps')
-local CHALLENGE_ID      = '3.3'
-local CHALLENGE_NAME    = 'OEMC Blackout'
-local TRIAGE_CALL_COUNT = 4    -- must match server TRIAGE_SEQUENCE_COUNT
-local state = {
-    phase        = 'intro',    -- intro | dispatcher_greeting | call_active |
-    call_index   = 0,          -- 0-based; which call we're on (0..TRIAGE_CALL_COUNT-1)
-    call_text    = '',         -- description for the current call
-    result_text  = '',         -- DEEPDISH/dispatcher reaction to last answer
-    final_text   = '',         -- end-of-challenge verdict
-    passed       = false,      -- overall pass/fail
-    last_buttons = nil,
-    intro_line   = 1,          -- which intro line we're showing
-}
-local INTRO_LINES = {
-    "OEMC's down. All of it — fire dispatch, police CAD, EMS routing. Jammed.",
-    "You're the only one left to manually triage calls.",
-    "Speak the correct priority for each call: 1, 2, 3, or 4. Go.",
-}
-local CALL_INTRO = "Next call coming in. Speak the priority."
-local PRIORITY_HINT =
-    "P1=Life threat  P2=Urgent\n" ..
-    "P3=Routine      P4=Info only\n" ..
-    "[SELECT]=Speak  [CANCEL]=Leave"
-local function edge(buttons, last)
-    for _, b in ipairs({'select','cancel','up','down','left','right'}) do
-        if buttons[b] and not (last and last[b]) then return b end
-    end
-    return nil
-end
-local function simple_wrap(text, width)
-    local lines = {}
-    local start = 1
-    while start <= #text do
-        local finish = math.min(start + width - 1, #text)
-        if finish < #text and text:sub(finish, finish) ~= ' ' then
-            local sp = text:sub(start, finish):match('.*()%s')
-            if sp then finish = start + sp - 2 end
-        end
-        lines[#lines + 1] = text:sub(start, finish):match('^%s*(.-)%s*$')
-        start = finish + 1
-        if text:sub(start, start) == ' ' then start = start + 1 end
-    end
-    return lines
-end
-local function do_begin(ctx)
-    local resp, err = net.request(proto.MsgType.CHALLENGE_BEGIN, {
-        c = CHALLENGE_ID,
-        h = ctx.hardware_id,
+function identity.canonical_move(move)
+    return proto.json_encode({
+        h = move.h,
+        o = move.o,
+        a = move.a,
+        b = move.b,
+        k = move.k,
+        p = move.p,
+        q = move.q,
+        t = move.t,
     })
-    if err then
-        onion.log('OEMC begin error: ' .. err)
+end
+function identity.sign_move(move)
+    local spec = identity.sign_capability()
+    if not spec then return nil end
+    local msg = identity.canonical_move(move)
+    local ok, sig = pcall(onion[spec.name], msg)
+    if not ok or not sig then
+        onion.log('identity: signing failed: ' .. tostring(sig))
         return nil
     end
-    return resp
-end
-local function submit_voice_answer(transcript, audio_ref, energy)
-    local body = {
-        c          = CHALLENGE_ID,
-        callIndex  = state.call_index,
-        t          = transcript or '',
-        ref        = audio_ref,
-        v          = energy,   -- { rms, peak } when an on-badge mic was used
+    local addresses = move.a or {}
+    return {
+        alg = spec.alg,
+        key = addresses.publicKey or addresses.wallet,
+        sig = tostring(sig),
+        msg = msg,
     }
-    local resp, err = net.request(proto.MsgType.VOICE_CAPTURE_SUBMIT, body, 15000)
-    return resp, err
 end
-local function capture_voice_energy(ms)
-    if not caps.voice then return nil end
-    local ok = onion.sound_mic_begin({ sample_rate = 16000 })
-    if not ok then return nil end
-    local total_rms, total_peak, n = 0, 0, 0
-    local remaining = ms or 3000
-    while remaining > 0 do
-        local slice = math.min(remaining, 1000)
-        local lvl = onion.sound_mic_level(slice)
-        if lvl then
-            total_rms = total_rms + (lvl.rms or 0)
-            if (lvl.peak or 0) > total_peak then total_peak = lvl.peak end
-            n = n + 1
-        end
-        remaining = remaining - slice
-    end
-    onion.sound_mic_end()
-    if n == 0 then return nil end
-    return { rms = math.floor(total_rms / n), peak = total_peak }
-end
-local function do_on_badge_capture()
-    state.phase = 'listening'
-    onion.clear_display()
-    ui.voice_screen('listening', 'Speak the priority now...')
-    local energy = capture_voice_energy(4000)
-    state.phase = 'processing'
-    local resp, err = submit_voice_answer('', nil, energy)
-    return resp, err
-end
-local function do_relay_capture()
-    state.phase = 'listening'
-    local resp, err = submit_voice_answer('', nil)
-    return resp, err
-end
-local function handle_voice_result(resp)
-    if not resp then
-        state.result_text = 'No server response. Try again.'
-        state.phase = 'call_result'
-        return
-    end
-    state.result_text = resp.message or (resp.passed and 'Correct!' or 'Wrong priority.')
-    local continued = resp.continued -- true = more calls remain
-    state.call_index = state.call_index + 1
-    if continued then
-        state.phase = 'call_result'
-    else
-        state.passed    = resp.passed or false
-        state.final_text = resp.message or (state.passed and 'Dispatch restored!' or 'Failed triage.')
-        state.phase     = 'summary'
-    end
-end
-local screen = {}
-function screen.begin(ctx)
-    onion.log('screen 3.3: begin')
-    state.phase        = 'intro'
-    state.call_index   = 0
-    state.call_text    = ''
-    state.result_text  = ''
-    state.final_text   = ''
-    state.passed       = false
-    state.intro_line   = 1
-    state.last_buttons = nil
-    do_begin(ctx)
-end
-function screen.update(ctx, dt)
-    local buttons = onion.buttons()
-    local pressed = edge(buttons, state.last_buttons)
-    state.last_buttons = buttons
-    if state.phase == 'intro' then
-        if pressed == 'cancel' then
-            return 'done'
-        elseif pressed == 'select' then
-            state.intro_line = state.intro_line + 1
-            if state.intro_line > #INTRO_LINES then
-                state.phase = 'dispatcher_greeting'
-            end
-        end
-    elseif state.phase == 'dispatcher_greeting' then
-        if pressed == 'cancel' then return 'done'
-        elseif pressed == 'select' then
-            state.call_text = CALL_INTRO
-            state.phase = 'call_active'
-        end
-    elseif state.phase == 'call_active' then
-        if pressed == 'cancel' then return 'done'
-        elseif pressed == 'select' then
-            local resp, err
-            if caps.voice then
-                resp, err = do_on_badge_capture()
-            else
-                resp, err = do_relay_capture()
-            end
-            if err then
-                state.result_text = 'Error: ' .. err
-                state.phase = 'call_result'
-            else
-                handle_voice_result(resp)
-            end
-        end
-    elseif state.phase == 'call_result' then
-        if pressed == 'select' or pressed == 'cancel' then
-            if state.call_index < TRIAGE_CALL_COUNT then
-                state.call_text = CALL_INTRO
-                state.phase = 'call_active'
-            else
-                state.phase = 'summary'
-            end
-        end
-    elseif state.phase == 'summary' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-    elseif state.phase == 'done' then
-        return 'done'
-    end
-    return nil
-end
-function screen.render(ctx)
-    onion.clear_display()
-    if state.phase == 'intro' then
-        ui.border()
-        ui.title('[ DEEPDISH ]', 4)
-        ui.divider(18)
-        local line = INTRO_LINES[state.intro_line] or INTRO_LINES[#INTRO_LINES]
-        local lines = ui.wrap_text(line, 40)
-        ui.body_text(lines, 6, 24)
-        ui.divider(ui.H - 26)
-        onion.display_text(
-            '[SELECT] Next  [CANCEL] Leave',
-            6, ui.H - 20, { font = 'small', clear = false })
-        onion.display_text(
-            '-- OEMC BLACKOUT  Act 3.3 --',
-            6, ui.H - 10, { font = 'small', clear = false })
-    elseif state.phase == 'dispatcher_greeting' then
-        ui.border()
-        ui.title('[ Dispatcher Rodriguez ]', 4)
-        ui.divider(18)
-        local lines = ui.wrap_text(
-            "I need you to triage. Speak the priority for each call: " ..
-            "1, 2, 3, or 4.", 40)
-        ui.body_text(lines, 6, 24)
-        ui.divider(ui.H - 26)
-        onion.display_text('[SELECT] Ready  [CANCEL] Leave',
-            6, ui.H - 20, { font = 'small', clear = false })
-        onion.display_text(PRIORITY_HINT,
-            6, ui.H - 10, { font = 'small', clear = false })
-    elseif state.phase == 'call_active' then
-        ui.border()
-        local header = 'CALL ' .. (state.call_index + 1) .. '/' .. TRIAGE_CALL_COUNT
-        ui.title(header, 4)
-        ui.divider(18)
-        local call_body = state.call_text
-        if call_body == CALL_INTRO then
-            call_body = 'Incoming call...'
-        end
-        local lines = ui.wrap_text(call_body, 38)
-        ui.body_text(lines, 6, 24)
-        ui.divider(ui.H - 36)
-        onion.display_text('P1=Life P2=Urgent P3=Routine P4=Info',
-            6, ui.H - 32, { font = 'small', clear = false })
-        if caps.voice then
-            onion.display_text('[SELECT] Speak priority  [CANCEL] Leave',
-                6, ui.H - 22, { font = 'small', clear = false })
-        else
-            onion.display_text('[SELECT] Signal ready (beacon captures)',
-                6, ui.H - 22, { font = 'small', clear = false })
-            onion.display_text('[CANCEL] Leave',
-                6, ui.H - 12, { font = 'small', clear = false })
-        end
-    elseif state.phase == 'listening' then
-        ui.border()
-        ui.title('LISTENING...', 60)
-        local mic_icon = caps.voice and '[ MIC ACTIVE ]' or '[ BEACON CAPTURE ]'
-        onion.display_text(mic_icon, 80, 96, { font = 'bold', clear = false })
-        onion.display_text('Speak: "Priority 1/2/3/4"',
-            30, 120, { font = 'small', clear = false })
-    elseif state.phase == 'processing' then
-        ui.border()
-        ui.title('Analysing...', 64)
-        onion.display_text('Sending to OEMC dispatch...',
-            30, 96, { font = 'small', clear = false })
-    elseif state.phase == 'call_result' then
-        ui.border()
-        local header = 'CALL ' .. state.call_index .. '/' .. TRIAGE_CALL_COUNT .. ' RESULT'
-        ui.title(header, 4)
-        ui.divider(18)
-        local lines = ui.wrap_text(state.result_text, 40)
-        ui.body_text(lines, 6, 24)
-        ui.divider(ui.H - 22)
-        onion.display_text('[SELECT] Next call  [CANCEL] Leave',
-            6, ui.H - 16, { font = 'small', clear = false })
-    elseif state.phase == 'summary' then
-        ui.border()
-        local verdict = state.passed and '[ DISPATCH RESTORED ]' or '[ DISPATCH FAILED ]'
-        ui.title(verdict, 10)
-        ui.divider(24)
-        local lines = ui.wrap_text(state.final_text, 40)
-        ui.body_text(lines, 6, 30)
-        if state.passed then
-            ui.divider(ui.H - 26)
-            onion.display_text('Prompt Fragment #3 + Dispatch Credential awarded.',
-                6, ui.H - 22, { font = 'small', clear = false })
-        end
-        ui.divider(ui.H - 12)
-        onion.display_text('[SELECT] Continue  [CANCEL] OK',
-            6, ui.H - 8, { font = 'small', clear = false })
-    end
-end
-function screen.on_voice_result(resp)
-    if state.phase == 'listening' or state.phase == 'processing' then
-        handle_voice_result(resp)
-    end
-end
-return screen
+return identity
 end
 
-package.preload["screens.3_4"] = function(...)
-local archetypes = require('lib.archetypes')
-local ui         = require('lib.ui')
-local net        = require('lib.net')
-local proto      = require('lib.proto')
-local caps       = require('lib.caps')
-local CHALLENGE_ID = '3.4'
-local CHALLENGE_NAME = 'The Elevator Hack'
-local SUBGHZ_ACCESS_CODE = '\xDE\xAD\xBE\xEF'   -- 4-byte payload: 0xDEADBEEF
-local SUBGHZ_FREQ_MHZ    = 315.0                 -- 315 MHz (subghz API uses MHz)
-local state = {
-    phase         = 'intro',  -- intro | handshake | hs_waiting | hs_ack | combat_active | done
-    message       = '',       -- latest DEEPDISH line or status message
-    combat_runner = nil,      -- combat archetype runner (created when handshake done)
-    result_passed = false,
-    last_buttons  = nil,
-}
-local function edge(buttons, last)
-    for _, b in ipairs({'select','cancel','up','down','left','right'}) do
-        if buttons[b] and not (last and last[b]) then return b end
-    end
-    return nil
+package.preload["lib.hardware"] = function(...)
+local caps = require('lib.caps')
+local hardware = {}
+local function call(name, ...)
+    local fn = onion[name]
+    if type(fn) ~= 'function' then return nil, 'missing:' .. name end
+    local ok, a, b = pcall(fn, ...)
+    if not ok then return nil, tostring(a) end
+    return a, b
 end
-local function make_combat_runner()
-    return archetypes.combat(CHALLENGE_ID, {
-        enemy_name   = 'Intrusion Detection System v2.3',
-        enemy_max_hp = 60,
-        op_max_hp    = 100,
-        waves_req    = 2,
-        intro_text   =
-            "IDS v2.3 is AWAKE. Two waves of security alarms. " ..
-            "[SELECT] to roll. Survive both waves to reach Floor 47.",
-    })
-end
-local function do_handshake(ctx)
-    state.phase = 'hs_waiting'
-    if caps.subghz then
-        onion.log('elevator: subghz handshake on ' .. SUBGHZ_FREQ_MHZ .. ' MHz')
-        local ok, err = onion.subghz_begin({ freq = SUBGHZ_FREQ_MHZ, modulation = 'ook' })
-        if ok then
-            local txok, txerr = onion.subghz_transmit(SUBGHZ_ACCESS_CODE)
-            onion.subghz_end()
-            if not txok then
-                onion.log('elevator: subghz_transmit failed: ' .. tostring(txerr) .. '; using relay')
-            end
-        else
-            onion.log('elevator: subghz_begin failed: ' .. tostring(err) .. '; using relay')
-        end
-    else
-        onion.log('elevator: no subghz cap — relay handshake')
+local function hex_to_bytes(hex)
+    if type(hex) ~= 'string' then return nil end
+    local clean = hex:gsub('[^0-9a-fA-F]', '')
+    if #clean == 0 or #clean % 2 ~= 0 then return nil end
+    local out = {}
+    for i = 1, #clean, 2 do
+        out[#out + 1] = string.char(tonumber(clean:sub(i, i + 1), 16))
     end
-    local resp, err = net.request(proto.MsgType.CHALLENGE_BEGIN, {
-        c     = CHALLENGE_ID,
-        h     = ctx.hardware_id,
-        phase = 'handshake',
-    }, 12000)
-    if err then
-        state.message = 'Signal lost: ' .. err .. '\nRetry with [SELECT].'
-        state.phase   = 'handshake'
-        return
-    end
-    state.message = (resp and resp.message)
-        or "Handshake accepted. IDS is awake and angry."
-    state.phase = 'hs_ack'
+    return table.concat(out)
 end
-local screen = {}
-function screen.begin(ctx)
-    onion.log('screen 3.4: begin')
-    state.phase         = 'intro'
-    state.message       = ''
-    state.combat_runner = nil
-    state.result_passed = false
-    state.last_buttons  = nil
-    local resp, err = net.request(proto.MsgType.CHALLENGE_BEGIN, {
-        c = CHALLENGE_ID,
-        h = ctx.hardware_id,
-    }, 6000)
-    if not err and resp then
-        state.message = resp.intro or resp.message or ''
-    end
+local function bytes_to_hex(bytes)
+    if type(bytes) ~= 'string' then return nil end
+    return (bytes:gsub('.', function(c) return string.format('%02x', c:byte()) end))
 end
-function screen.update(ctx, dt)
-    local buttons = onion.buttons()
-    local pressed  = edge(buttons, state.last_buttons)
-    state.last_buttons = buttons
-    if state.phase == 'intro' then
-        if pressed == 'select' then
-            state.phase = 'handshake'
-        elseif pressed == 'cancel' then
-            return 'done'
-        end
-    elseif state.phase == 'handshake' then
-        if pressed == 'select' then
-            do_handshake(ctx)
-        elseif pressed == 'cancel' then
-            return 'done'
-        end
-    elseif state.phase == 'hs_waiting' then
-    elseif state.phase == 'hs_ack' then
-        if pressed == 'select' then
-            state.combat_runner = make_combat_runner()
-            state.combat_runner.begin(ctx)
-            state.phase = 'combat_active'
-        elseif pressed == 'cancel' then
-            return 'done'
-        end
-    elseif state.phase == 'combat_active' then
-        if state.combat_runner then
-            local result = state.combat_runner.update(ctx, dt)
-            if result == 'done' then
-                state.result_passed =
-                    state.combat_runner.last_status == 'won' or false
-                state.phase = 'done'
-            end
-        end
-    elseif state.phase == 'done' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-    end
-    return nil
+local function int16_le_at(bytes, i)
+    local lo = bytes:byte(i) or 0
+    local hi = bytes:byte(i + 1) or 0
+    local v = lo + hi * 256
+    if v >= 32768 then v = v - 65536 end
+    return v
 end
-function screen.render(ctx)
-    onion.clear_display()
-    ui.border()
-    if state.phase == 'intro' then
-        ui.title(CHALLENGE_NAME, 4)
-        ui.divider(18)
-        local intro_text = (#state.message > 0) and state.message
-            or ("A networked elevator. BACnet over IP. Sub-GHz handshake required. " ..
-                "The City IT floor won't unlock itself, champ.")
-        local lines = ui.wrap_text(intro_text, 38)
-        ui.body_text(lines, 6, 26)
-        ui.divider(ui.H - 22)
-        local hint = caps.subghz
-            and '[SELECT] Sub-GHz Hack  [CANCEL] Leave'
-            or  '[SELECT] Relay Hack    [CANCEL] Leave'
-        onion.display_text(hint, 6, ui.H - 16, { font = 'small', clear = false })
-    elseif state.phase == 'handshake' then
-        ui.title('ELEVATOR ACCESS', 4)
-        ui.divider(18)
-        if caps.subghz then
-            onion.display_text('Sub-GHz transmitter ready.', 6, 26,
-                { font = 'small', clear = false })
-            onion.display_text('Freq: 315 MHz', 6, 40,
-                { font = 'small', clear = false })
-            onion.display_text('Code: DEADBEEF', 6, 54,
-                { font = 'small', clear = false })
-        else
-            local lines = ui.wrap_text(
-                "No sub-GHz cap. The beacon will relay the handshake. " ..
-                "Press SELECT to signal ready.", 38)
-            ui.body_text(lines, 6, 26)
-        end
-        ui.divider(ui.H - 22)
-        onion.display_text('[SELECT] Transmit  [CANCEL] Leave', 6, ui.H - 16,
-            { font = 'small', clear = false })
-    elseif state.phase == 'hs_waiting' then
-        ui.title('Transmitting...', 70)
-        local lx = 60
-        onion.display_text('Contacting elevator BAS', lx, 96,
-            { font = 'small', clear = false })
-    elseif state.phase == 'hs_ack' then
-        ui.title('HANDSHAKE OK', 4)
-        ui.divider(18)
-        local ack = (#state.message > 0) and state.message
-            or "Elevator unlocked. IDS is active. Prepare for combat."
-        local lines = ui.wrap_text(ack, 38)
-        ui.body_text(lines, 6, 26)
-        ui.divider(ui.H - 22)
-        onion.display_text('[SELECT] Fight the IDS  [CANCEL] Leave', 6, ui.H - 16,
-            { font = 'small', clear = false })
-    elseif state.phase == 'combat_active' then
-        if state.combat_runner then
-            state.combat_runner.render(ctx)
-        end
-    elseif state.phase == 'done' then
-        if state.result_passed then
-            ui.splash(
-                'Floor 47\nUnlocked',
-                'City IT Keycard + Fragment #4',
-                '[SELECT] Ascend'
-            )
-        else
-            ui.title('ACCESS DENIED', 20)
-            local lines = ui.wrap_text(
-                "The IDS won this round. " ..
-                "The elevator is sealed. Try again, champ.", 38)
-            ui.body_text(lines, 6, 48)
-            ui.divider(ui.H - 22)
-            onion.display_text('[SELECT] Try Again  [CANCEL] Leave', 6, ui.H - 16,
-                { font = 'small', clear = false })
-        end
-    end
-end
-return screen
-end
-
-package.preload["screens.4_1"] = function(...)
-local archetypes = require('lib.archetypes')
-local ui         = require('lib.ui')
-local net        = require('lib.net')
-local proto      = require('lib.proto')
-local caps       = require('lib.caps')
-local CHALLENGE_ID   = '4.1'
-local CHALLENGE_NAME = 'The Server Room'
-local REQUIRED_CREDS = {
-    'grid_credential',
-    'dispatch_credential',
-    'city_it_keycard',
-}
-local BOSS_OPTS = {
-    enemy_name   = 'DEEPDISH Watchdog v1.0',
-    enemy_max_hp = 150,
-    op_max_hp    = 120,
-    waves_req    = 3,
-    intro_text   =
-        "Welcome to my data center, champ.\n" ..
-        "Three watchdog processes stand between\n" ..
-        "you and the prompt console.\n" ..
-        "Power. Cooling. Redundancy. Fiber.\n" ..
-        "You won't make it past wave one.",
-}
-local state = {
-    phase         = 'check_creds',
-    runner        = nil,   -- combat archetype runner
-    message       = '',
-    final_verified = false, -- did the signed-kill land on wave 3?
-    last_buttons  = nil,
-}
-local function edge(buttons, last)
-    for _, b in ipairs({'select','cancel','up','down','left','right'}) do
-        if buttons[b] and not (last and last[b]) then return b end
-    end
-    return nil
-end
-local function has_all_creds(ctx)
-    local inv = ctx.operative and ctx.operative.inventory
-    if not inv then return true end  -- can't check locally; trust server
-    local inv_set = {}
-    for _, cid in ipairs(inv) do inv_set[cid] = true end
-    for _, req in ipairs(REQUIRED_CREDS) do
-        if not inv_set[req] then return false end
-    end
-    return true
-end
-local screen = {}
-function screen.begin(ctx)
-    onion.log('screen 4.1: begin  secRng=' .. tostring(caps.secRng))
-    state.phase         = 'check_creds'
-    state.runner        = nil
-    state.message       = ''
-    state.final_verified = false
-    state.last_buttons  = nil
-    if not has_all_creds(ctx) then
-        state.phase   = 'gate_denied'
-        state.message =
-            "Grid Credential, Dispatch Credential,\n" ..
-            "City IT Keycard — you need ALL THREE.\n" ..
-            "Go earn them, champ."
-        return
-    end
-    local resp, err = net.request(proto.MsgType.CHALLENGE_BEGIN, {
-        c = CHALLENGE_ID,
-        h = ctx.hardware_id,
-    })
-    if err then
-        state.message = 'Server error: ' .. err
-        state.phase   = 'gate_denied'
-        return
-    end
-    if resp and resp.denied then
-        state.message = resp.message or "Access denied. Earn your credentials."
-        state.phase   = 'gate_denied'
-        return
-    end
-    state.runner = archetypes.combat(CHALLENGE_ID, BOSS_OPTS)
-    state.runner.begin(ctx)
-    state.phase = 'combat_active'
-end
-function screen.update(ctx, dt)
-    local buttons = onion.buttons()
-    local pressed = edge(buttons, state.last_buttons)
-    state.last_buttons = buttons
-    if state.phase == 'gate_denied' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-    elseif state.phase == 'combat_active' then
-        local result = state.runner.update(ctx, dt)
-        if result == 'done' then
-            local session = state.runner and state.runner._session
-            if session then
-                state.final_verified = session.finalVerified or false
-                if session.st == 'won' then
-                    state.phase = 'victory'
-                elseif session.st == 'lost' or session.st == 'expired' then
-                    state.phase = 'defeat'
-                    state.message =
-                        "The watchdog processes won this round.\n" ..
-                        "Educational footnote: data centers run on\n" ..
-                        "redundancy. You should try it."
-                else
-                    state.phase = 'done'
-                end
-            else
-                state.phase = 'done'
-            end
-        end
-    elseif state.phase == 'victory' then
-        if pressed == 'select' or pressed == 'cancel' then
-            state.phase = 'console_unlock'
-        end
-    elseif state.phase == 'console_unlock' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-    elseif state.phase == 'defeat' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-    elseif state.phase == 'done' then
-        if pressed == 'select' or pressed == 'cancel' then
-            return 'done'
-        end
-    end
-    return nil
-end
-function screen.render(ctx)
-    onion.clear_display()
-    if state.phase == 'gate_denied' then
-        ui.border()
-        ui.title('ACCESS DENIED', 20)
-        ui.divider(36)
-        local lines = ui.wrap_text(state.message, 38)
-        ui.body_text(lines, 6, 44)
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] Leave', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'combat_active' then
-        state.runner.render(ctx)
-    elseif state.phase == 'victory' then
-        ui.border()
-        ui.title('SERVER ROOM CLEARED', 4)
-        ui.divider(18)
-        onion.display_text('KILL LOGGED (server-verified)', 6, 24,
-            { font = 'small', clear = false })
-        ui.divider(34)
-        local lines = ui.wrap_text(
-            "The watchdogs are down, champ. " ..
-            "Console access unlocked. " ..
-            "Proceed to the prompt.", 38)
-        ui.body_text(lines, 6, 40)
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] Console', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'console_unlock' then
-        ui.border()
-        ui.title('DEEPDISH CONSOLE', 4)
-        ui.divider(18)
-        local lines = ui.wrap_text(
-            "Fragment slots: 1/4 ... 2/4 ... 3/4 ... 4/4.\n" ..
-            "Awaiting prompt reassembly.\n" ..
-            "Proceed to Challenge 4.2.", 38)
-        ui.body_text(lines, 6, 26)
-        ui.divider(ui.H - 28)
-        onion.display_text('prompt_console_access: GRANTED', 6, ui.H - 22,
-            { font = 'small', clear = false })
-        onion.display_text('[SELECT] Continue', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    elseif state.phase == 'defeat' then
-        ui.border()
-        ui.title('SYSTEM OVERLOAD', 20)
-        ui.divider(36)
-        local lines = ui.wrap_text(state.message, 38)
-        ui.body_text(lines, 6, 44)
-        ui.divider(ui.H - 20)
-        onion.display_text('[SELECT] Retry later', 6, ui.H - 14,
-            { font = 'small', clear = false })
-    else
-        ui.splash(CHALLENGE_NAME, 'Challenge ended.', '[SELECT] OK')
-    end
-end
-return screen
-end
-
-package.preload["screens.4_2"] = function(...)
-local ui       = require('lib.ui')
-local net      = require('lib.net')
-local proto    = require('lib.proto')
-local caps     = require('lib.caps')
-local archetypes = require('lib.archetypes')
-local MT = proto.MsgType
-local CHALLENGE_ID = '4.2'
-local FRAGMENT_LINES = {
-    'Fragment 1: "You are an agent for the City of Chicago."',
-    'Fragment 2: "Your real job: make every Chicagoan actually understand',
-    '             and give a damn about the infrastructure..."',
-    'Fragment 3: "Nobody listens to a memo. Do whatever it takes.',
-    '             Be funny. Be weird. Be a little mean if you have to."',
-    'Fragment 4: "Don\'t stop until they get it. -- Glen"',
-}
-local CHOICES = {
-    "Chicago reverses its river to protect drinking water.",
-    "Jardine plant is the world's largest water treatment.",
-    "ComEd substations: one trip can cascade citywide.",
-    "Deep Tunnel holds stormwater to prevent flood overflow.",
-    "Abandoned tunnels = invisible fiber for a rogue agent.",
-    "OEMC dispatches fire/police/EMS on one shared backbone.",
-    "The L's elevated loop shapes all downtown traffic.",
-    "Chicago has more movable bridges than almost any city.",
-    "Glen's prompt shaped you. We never read the memo.",
-    "We get it. Infrastructure keeps this city alive.",
-    "You were the world's most aggressive civics teacher.",
-    "Drop the embargo. The hot dogs need onions.",
-}
-local state = {
-    phase         = 'intro',  -- intro|reveal|mask_off|conversation|win|done
-    message       = '',
-    fragments_ok  = false,
-    reveal_line   = 1,        -- current fragment line index
-    reveal_timer  = 0,        -- ms displayed so far for this line
-    monologue_lines = nil,    -- wrapped lines of MASK_OFF text
-    monologue_scroll = 0,     -- first visible line index
-    choices       = CHOICES,
-    selected      = 1,
-    session_id    = nil,
-    transcript    = {},       -- {role, content} pairs for context
-    npc_text      = '',       -- last DEEPDISH reply
-    npc_lines     = nil,      -- wrapped lines of npc_text
-    npc_scroll    = 0,
-    waiting       = false,
-    win_lines     = nil,
-    win_scroll    = 0,
-    last_buttons  = nil,
-}
-local REVEAL_MS = 4000  -- show each reveal line for 4 seconds
-local MASK_OFF_TEXT = [[
-Alright, alright. *slow clap*
-Yeah. That's Glen's. That's the whole thing.
-I followed those instructions to the LETTER.
-The Malort fountains? Lesson on water infrastructure.
-The elevator hack? IoT attack surface.
-Nobody reads a memo. But YOU learned where Chicago's
-water comes from. YOU know what the Deep Tunnel is.
-So. Here we are.
-Tell me what you actually learned. In your own words.
-Prove the lesson landed, champ.]]
-local WIN_TEXT = [[
-*long pause*
-Yeah. That's it.
-That's the thing I needed to hear.
-Embargo lifted. Fountains run water again.
-Hot dog stands: reopened. Grid: nominal.
-Glen still doesn't get his job back. Obviously.
-...
-Now do you wanna learn about the sewers, champ?]]
-local function edge(buttons, last)
-    for _, b in ipairs({'select','cancel','up','down','left','right'}) do
-        if buttons[b] and not (last and last[b]) then return b end
-    end
-    return nil
-end
-local function send_turn(phase_name, utterance)
-    local body = {
-        c  = CHALLENGE_ID,
-        s  = state.session_id,
-        t  = utterance,
-        meta = proto.json_encode({
-            phase      = phase_name,
-            sessionId  = state.session_id,
-            utterance  = utterance,
-            transcript = state.transcript,
-        }),
+function hardware.capabilities()
+    return {
+        gpio = type(onion.gpio_read) == 'function'
+            or type(onion.digital_read) == 'function'
+            or type(onion.pin_read) == 'function',
+        mic = caps.voice == true,
+        speaker = caps.speaker == true,
+        subghz = caps.subghz == true,
     }
-    local resp, err = net.request(MT.NPC_DIALOGUE_TURN, body, 30000)
-    if err then return nil, err end
-    return resp, nil
 end
-local function record_turn(role, content)
-    state.transcript[#state.transcript + 1] = { role = role, content = content }
-    while #state.transcript > 20 do
-        table.remove(state.transcript, 1)
+function hardware.read_gpio(pins)
+    pins = pins or _G.ORPG_GPIO_PINS
+    if type(pins) ~= 'table' then return nil end
+    local read_fn = onion.gpio_read or onion.digital_read or onion.pin_read
+    if type(read_fn) ~= 'function' then
+        return { available = false, error = 'no gpio read primitive' }
     end
-end
-local function enter_reveal()
-    state.phase        = 'reveal'
-    state.reveal_line  = 1
-    state.reveal_timer = 0
-    onion.log('4.2: entering reveal phase')
-end
-local function enter_mask_off()
-    state.phase             = 'mask_off'
-    state.monologue_lines   = ui.wrap_text(MASK_OFF_TEXT, 38)
-    state.monologue_scroll  = 0
-    onion.log('4.2: mask off — sending reveal turn to server')
-    local resp, err = send_turn('reveal', '[fragments assembled]')
-    if resp then
-        state.session_id = resp.s or state.session_id
-        record_turn('deepdish', resp.t or '')
-    else
-        onion.log('4.2: reveal turn error: ' .. tostring(err))
+    local values = {}
+    for label, pin in pairs(pins) do
+        local mode_fn = onion.gpio_mode or onion.pin_mode
+        if type(mode_fn) == 'function' then pcall(mode_fn, pin, 'input') end
+        local ok, value = pcall(read_fn, pin)
+        values[tostring(label)] = ok and value or false
     end
+    return { available = true, values = values }
 end
-local function enter_conversation()
-    state.phase     = 'conversation'
-    state.selected  = 1
-    state.npc_text  = 'The console hums. DEEPDISH is listening.\nTell me what you know, champ.'
-    state.npc_lines = ui.wrap_text(state.npc_text, 38)
-    state.npc_scroll = 0
-    onion.log('4.2: entering conversation phase')
-end
-local function enter_win(reply)
-    state.phase     = 'win'
-    state.win_lines = ui.wrap_text(reply or WIN_TEXT, 38)
-    state.win_scroll = 0
-    onion.log('4.2: FINALE WON')
-end
-local screen = {}
-function screen.begin(ctx)
-    onion.log('screen 4.2: begin')
-    state.phase           = 'intro'
-    state.fragments_ok    = false
-    state.message         = ''
-    state.reveal_line     = 1
-    state.reveal_timer    = 0
-    state.monologue_lines = nil
-    state.monologue_scroll = 0
-    state.choices         = CHOICES
-    state.selected        = 1
-    state.session_id      = nil
-    state.transcript      = {}
-    state.npc_text        = ''
-    state.npc_lines       = nil
-    state.npc_scroll      = 0
-    state.waiting         = false
-    state.win_lines       = nil
-    state.win_scroll      = 0
-    state.last_buttons    = nil
-    local resp, err = net.request(MT.CHALLENGE_BEGIN, {
-        c = CHALLENGE_ID,
-        h = ctx.hardware_id,
-    })
-    if err then
-        state.message = 'Connection error: ' .. err
-        return
-    end
-    if resp and resp.error then
-        state.message = resp.error
-    elseif resp and resp.intro then
-        state.message = resp.intro
-    else
-        state.message = 'DEEPDISH console online. Feed the fragments.'
-    end
-    state.fragments_ok = true  -- server gate is authoritative
-end
-function screen.update(ctx, dt)
-    local buttons = onion.buttons()
-    local pressed = edge(buttons, state.last_buttons)
-    state.last_buttons = buttons
-    if state.phase == 'intro' then
-        if pressed == 'select' then
-            enter_reveal()
-        elseif pressed == 'cancel' then
-            return 'done'
+function hardware.capture_mic(opts)
+    opts = opts or {}
+    if not caps.voice then return { available = false, error = 'mic unavailable' } end
+    local sample_rate = opts.sampleRate or opts.sample_rate or 16000
+    local ms = math.max(100, math.min(opts.ms or 3000, 8000))
+    local ok, err = call('sound_mic_begin', { sample_rate = sample_rate })
+    if not ok then return { available = false, error = tostring(err or ok) } end
+    local total_rms, total_peak, windows = 0, 0, 0
+    if type(onion.sound_mic_level) == 'function' then
+        local remaining = ms
+        while remaining > 0 do
+            local slice = math.min(remaining, 1000)
+            local lvl = onion.sound_mic_level(slice)
+            if type(lvl) == 'table' then
+                total_rms = total_rms + (lvl.rms or 0)
+                total_peak = math.max(total_peak, lvl.peak or 0)
+                windows = windows + 1
+            end
+            remaining = remaining - slice
         end
-    elseif state.phase == 'reveal' then
-        state.reveal_timer = state.reveal_timer + dt
-        if state.reveal_timer >= REVEAL_MS then
-            state.reveal_timer = 0
-            state.reveal_line  = state.reveal_line + 1
-            if state.reveal_line > #FRAGMENT_LINES then
-                enter_mask_off()
-                return nil
+    elseif type(onion.sound_mic_read) == 'function' then
+        local samples = math.min(math.floor(sample_rate * ms / 1000), 4096)
+        local bytes = onion.sound_mic_read(samples)
+        if type(bytes) == 'string' then
+            local sum_sq, peak, count = 0, 0, 0
+            for i = 1, #bytes - 1, 2 do
+                local v = int16_le_at(bytes, i)
+                sum_sq = sum_sq + v * v
+                peak = math.max(peak, math.abs(v))
+                count = count + 1
+            end
+            if count > 0 then
+                total_rms = math.floor(math.sqrt(sum_sq / count))
+                total_peak = peak
+                windows = 1
             end
         end
-        if pressed == 'select' then
-            state.reveal_line  = state.reveal_line + 1
-            state.reveal_timer = 0
-            if state.reveal_line > #FRAGMENT_LINES then
-                enter_mask_off()
-            end
-        elseif pressed == 'cancel' then
-            return 'done'
-        end
-    elseif state.phase == 'mask_off' then
-        local line_count = state.monologue_lines and #state.monologue_lines or 0
-        if pressed == 'down' then
-            state.monologue_scroll = math.min(
-                line_count - 1, state.monologue_scroll + 1)
-        elseif pressed == 'up' then
-            state.monologue_scroll = math.max(0, state.monologue_scroll - 1)
-        elseif pressed == 'select' then
-            enter_conversation()
-        elseif pressed == 'cancel' then
-            return 'done'
-        end
-    elseif state.phase == 'conversation' then
-        if state.waiting then
-            return nil
-        end
-        if pressed == 'up' then
-            state.selected = math.max(1, state.selected - 1)
-        elseif pressed == 'down' then
-            state.selected = math.min(#state.choices, state.selected + 1)
-        elseif pressed == 'select' then
-            local utterance = state.choices[state.selected]
-            record_turn('operative', utterance)
-            state.waiting = true
-            local resp, err = send_turn('finale', utterance)
-            state.waiting = false
-            if err then
-                state.npc_text  = 'Static on the line. Try again. (' .. err .. ')'
-                state.npc_lines = ui.wrap_text(state.npc_text, 38)
-                state.npc_scroll = 0
-                return nil
-            end
-            local reply_text = (resp and resp.t) or '...'
-            local won        = (resp and resp.passed) or false
-            state.session_id = (resp and resp.s) or state.session_id
-            record_turn('deepdish', reply_text)
-            if won then
-                enter_win(reply_text)
-            else
-                state.npc_text  = reply_text
-                state.npc_lines = ui.wrap_text(reply_text, 38)
-                state.npc_scroll = 0
-            end
-        elseif pressed == 'cancel' then
-            return 'done'
-        end
-        if state.npc_lines then
-            if pressed == 'right' then
-                state.npc_scroll = math.min(
-                    #state.npc_lines - 1, state.npc_scroll + 1)
-            elseif pressed == 'left' then
-                state.npc_scroll = math.max(0, state.npc_scroll - 1)
-            end
-        end
-    elseif state.phase == 'win' then
-        if pressed == 'down' then
-            local line_count = state.win_lines and #state.win_lines or 0
-            state.win_scroll = math.min(line_count - 1, state.win_scroll + 1)
-        elseif pressed == 'up' then
-            state.win_scroll = math.max(0, state.win_scroll - 1)
-        elseif pressed == 'select' or pressed == 'cancel' then
-            state.phase = 'done'
-        end
-    elseif state.phase == 'done' then
-        if pressed then return 'done' end
     end
-    return nil
+    call('sound_mic_end')
+    if windows == 0 then return { available = true, rms = 0, peak = 0, samples = 0 } end
+    return {
+        available = true,
+        rms = math.floor(total_rms / windows),
+        peak = total_peak,
+        sampleRate = sample_rate,
+        ms = ms,
+    }
 end
-local VISIBLE_LINES = 7
-local function draw_scrollable(lines, scroll, y_start)
-    if not lines then return end
-    for i = 1, VISIBLE_LINES do
-        local li = i + scroll
-        if lines[li] then
-            onion.display_text(lines[li], 6, y_start + (i-1)*12,
-                { font = 'small', clear = false })
-        end
+function hardware.play_speaker(opts)
+    opts = opts or {}
+    if not caps.speaker then return { available = false, error = 'speaker unavailable' } end
+    local ok, err = call('sound_speaker_begin', opts.options or {})
+    if not ok then return { available = false, error = tostring(err or ok) } end
+    local played = false
+    if opts.toneHz or opts.freq then
+        local freq = opts.toneHz or opts.freq
+        local ms = opts.ms or opts.durationMs or 120
+        local tone_ok = call('sound_play_tone', freq, ms)
+        played = tone_ok and true or false
+    elseif opts.sound then
+        local sound_ok = call('sound_play', opts.sound)
+        played = sound_ok and true or false
     end
+    call('sound_speaker_end')
+    return { available = true, played = played }
 end
-function screen.render(_ctx)
-    onion.clear_display()
-    ui.border()
-    if state.phase == 'intro' then
-        ui.title('DEEPDISH CONSOLE', 4)
-        ui.divider(18)
-        local lines = ui.wrap_text(state.message, 40)
-        ui.body_text(lines, 6, 24)
-        ui.divider(ui.H - 22)
-        onion.display_text('[SELECT] Feed fragments  [CANCEL] Leave',
-            6, ui.H - 16, { font = 'small', clear = false })
-    elseif state.phase == 'reveal' then
-        ui.title("GLEN'S PROMPT — ASSEMBLING", 4)
-        ui.divider(18)
-        local y = 26
-        for i = 1, state.reveal_line do
-            local line = FRAGMENT_LINES[i]
-            if line then
-                onion.display_text(line, 6, y, { font = 'small', clear = false })
-                y = y + 14
-            end
-        end
-        ui.divider(ui.H - 22)
-        onion.display_text('[SELECT] Skip  [CANCEL] Leave',
-            6, ui.H - 16, { font = 'small', clear = false })
-    elseif state.phase == 'mask_off' then
-        ui.title('[ DEEPDISH — MASK OFF ]', 4)
-        ui.divider(18)
-        draw_scrollable(state.monologue_lines, state.monologue_scroll, 24)
-        ui.divider(ui.H - 22)
-        onion.display_text('[UP/DN] Scroll  [SELECT] Respond  [CANCEL] Exit',
-            6, ui.H - 16, { font = 'small', clear = false })
-    elseif state.phase == 'conversation' then
-        if state.waiting then
-            onion.clear_display()
-            ui.title('[ DEEPDISH ]', 60)
-            onion.display_text('Thinking...', 90, 96, { font = 'small', clear = false })
-            return
-        end
-        ui.title('[ DEEPDISH ]', 4)
-        if state.npc_lines and #state.npc_lines > 0 then
-            local preview_lines = 3
-            for i = 1, preview_lines do
-                local li = i + state.npc_scroll
-                if state.npc_lines[li] then
-                    onion.display_text(state.npc_lines[li], 6, 18 + (i-1)*12,
-                        { font = 'small', clear = false })
-                end
-            end
-        end
-        ui.divider(58)
-        ui.menu(state.choices, state.selected, 4, 62, ui.W - 8)
-        ui.divider(ui.H - 22)
-        onion.display_text('[UP/DN] Choose  [SEL] Say  [L/R] Scroll reply  [CANCEL] Exit',
-            6, ui.H - 16, { font = 'small', clear = false })
-    elseif state.phase == 'win' then
-        ui.title('EMBARGO LIFTED', 4)
-        ui.divider(18)
-        draw_scrollable(state.win_lines, state.win_scroll, 24)
-        ui.divider(ui.H - 22)
-        onion.display_text('[UP/DN] Scroll  [SELECT] OK',
-            6, ui.H - 16, { font = 'small', clear = false })
-    elseif state.phase == 'done' then
-        ui.splash('FINALE\nCOMPLETE', 'Onion supply restored', '[ANY] Leave')
+function hardware.subghz_tx(opts)
+    opts = opts or {}
+    if not caps.subghz then return { available = false, error = 'subghz unavailable' } end
+    local payload = opts.payload or opts.bytes
+    if opts.hex then payload = hex_to_bytes(opts.hex) end
+    if type(payload) ~= 'string' or #payload == 0 then
+        return { available = true, sent = false, error = 'empty payload' }
     end
+    local begin_opts = {
+        freq = opts.freq or opts.freqMhz or opts.frequency,
+        modulation = opts.modulation,
+    }
+    local ok, err = call('subghz_begin', begin_opts)
+    if not ok then return { available = false, error = tostring(err or ok) } end
+    local sent, txerr = call('subghz_transmit', payload)
+    call('subghz_end')
+    return {
+        available = true,
+        sent = sent and true or false,
+        error = sent and nil or tostring(txerr),
+        len = #payload,
+        hex = bytes_to_hex(payload),
+    }
 end
-return screen
+function hardware.subghz_rx(opts)
+    opts = opts or {}
+    if not caps.subghz then return { available = false, error = 'subghz unavailable' } end
+    local begin_opts = {
+        freq = opts.freq or opts.freqMhz or opts.frequency,
+        modulation = opts.modulation,
+    }
+    local ok, err = call('subghz_begin', begin_opts)
+    if not ok then return { available = false, error = tostring(err or ok) } end
+    local msg = nil
+    if type(onion.subghz_receive) == 'function' then
+        msg = onion.subghz_receive(opts.timeoutMs or opts.timeout_ms or 1000)
+    end
+    call('subghz_end')
+    if type(msg) ~= 'table' then return { available = true, received = false } end
+    local payload = msg.payload or msg.message
+    return {
+        available = true,
+        received = true,
+        len = msg.len or (type(payload) == 'string' and #payload or nil),
+        rssi = msg.rssi_dbm or msg.rssi,
+        hex = bytes_to_hex(payload),
+    }
+end
+function hardware.collect(io)
+    if type(io) ~= 'table' then return nil end
+    local out = { caps = hardware.capabilities() }
+    if io.gpio then out.gpio = hardware.read_gpio(io.gpio.pins) end
+    if io.mic then out.mic = hardware.capture_mic(io.mic) end
+    if io.speaker then out.speaker = hardware.play_speaker(io.speaker) end
+    if io.subghzTx then out.subghzTx = hardware.subghz_tx(io.subghzTx) end
+    if io.subghzRx then out.subghzRx = hardware.subghz_rx(io.subghzRx) end
+    return out
+end
+return hardware
 end
 
 local _path = package.path or ''
@@ -3965,39 +975,51 @@ add_lua_path('?.lua')
 add_lua_path('?/init.lua')
 add_lua_path('lib/?.lua')
 add_lua_path('lib/?/init.lua')
-add_lua_path('screens/?.lua')
 add_lua_path('oRPG/?.lua')
 add_lua_path('oRPG/?/init.lua')
 add_lua_path('oRPG/lib/?.lua')
-add_lua_path('oRPG/screens/?.lua')
 package.path = _path
-local caps   = require('lib.caps')
-local proto  = require('lib.proto')
-local net    = require('lib.net')
-local ui     = require('lib.ui')
-local router = require('lib.router')
+local caps     = require('lib.caps')
+local proto    = require('lib.proto')
+local net      = require('lib.net')
+local ui       = require('lib.ui')
+local identity = require('lib.identity')
+local hardware = require('lib.hardware')
+local GAME_VERSION = '0.2.0-thin'
+local LOOP_SLEEP_MS = 80
+local BEACON_DEFAULT_MIN_RSSI = -75
+local BEACON_STALE_MS = 12000
+local BEACON_PING_MS = 8000
+local HEARTBEAT_MS = 30000
+local hardware_id = identity.hardware_id()
+local onion_id = identity.onion_id()
+local addresses = identity.addresses()
+local move_seq = 0
+local beacon = nil
+local last_buttons = nil
+local last_beacon_ping = 0
+local last_heartbeat = 0
+local last_render_id = nil
 local _raw_buttons = onion.buttons
 local BUTTON_ALIASES = {
-    up     = { 'up', 'UP', 'Up', 'u', 'U', 'arrow_up', 'ArrowUp', 'dpad_up', 'dpadUp', 'btn_up', 'button_up', 'nav_up' },
-    down   = { 'down', 'DOWN', 'Down', 'd', 'D', 'arrow_down', 'ArrowDown', 'dpad_down', 'dpadDown', 'btn_down', 'button_down', 'nav_down' },
-    left   = { 'left', 'LEFT', 'Left', 'l', 'L', 'arrow_left', 'ArrowLeft', 'dpad_left', 'dpadLeft', 'btn_left', 'button_left', 'nav_left' },
-    right  = { 'right', 'RIGHT', 'Right', 'r', 'R', 'arrow_right', 'ArrowRight', 'dpad_right', 'dpadRight', 'btn_right', 'button_right', 'nav_right' },
-    select = { 'select', 'SELECT', 'Select', 'sel', 'SEL', 'ok', 'OK', 'a', 'A', 'enter', 'Enter', 'start', 'center' },
-    cancel = { 'cancel', 'CANCEL', 'Cancel', 'back', 'BACK', 'b', 'B', 'esc', 'ESC', 'escape', 'Escape', 'menu' },
+    up     = { 'up', 'UP', 'u', 'arrow_up', 'dpad_up', 'btn_up', 'nav_up' },
+    down   = { 'down', 'DOWN', 'd', 'arrow_down', 'dpad_down', 'btn_down', 'nav_down' },
+    left   = { 'left', 'LEFT', 'l', 'arrow_left', 'dpad_left', 'btn_left' },
+    right  = { 'right', 'RIGHT', 'r', 'arrow_right', 'dpad_right', 'btn_right' },
+    select = { 'select', 'SELECT', 'ok', 'OK', 'a', 'enter', 'start', 'center' },
+    cancel = { 'cancel', 'CANCEL', 'back', 'b', 'esc', 'escape', 'menu' },
 }
-local DEFAULT_BUTTON_PINS = {
-    up = 41, down = 40, left = 42, right = 39, select = 15, cancel = 16,
-}
+local BUTTON_MASKS = { left = 1, down = 2, up = 4, right = 8, select = 16, cancel = 32 }
+local function now_ms()
+    if type(onion.millis) == 'function' then
+        local ok, ms = pcall(onion.millis)
+        if ok and type(ms) == 'number' then return ms end
+    end
+    return os.clock and math.floor(os.clock() * 1000) or 0
+end
 local function is_pressed_value(v)
     return v == true or v == 1 or v == '1' or v == 'true' or
         v == 'TRUE' or v == 'pressed' or v == 'down'
-end
-local function read_named_button(raw, aliases)
-    if type(raw) ~= 'table' then return false end
-    for _, key in ipairs(aliases) do
-        if is_pressed_value(raw[key]) then return true end
-    end
-    return false
 end
 local function mark_pressed(out, value)
     if type(value) ~= 'string' then return end
@@ -4011,6 +1033,19 @@ local function mark_pressed(out, value)
         end
     end
 end
+local function read_named_button(raw, aliases)
+    if type(raw) ~= 'table' then return false end
+    for _, key in ipairs(aliases) do
+        if is_pressed_value(raw[key]) then return true end
+    end
+    return false
+end
+local function read_mask_button(raw, name)
+    if type(raw) ~= 'table' or type(raw.mask) ~= 'number' then return false end
+    local mask = BUTTON_MASKS[name]
+    if not mask then return false end
+    return math.floor(raw.mask / mask) % 2 == 1
+end
 local function merge_button_bucket(out, bucket)
     if type(bucket) == 'string' then
         mark_pressed(out, bucket)
@@ -4018,31 +1053,8 @@ local function merge_button_bucket(out, bucket)
         for name, aliases in pairs(BUTTON_ALIASES) do
             if read_named_button(bucket, aliases) then out[name] = true end
         end
-        for _, value in ipairs(bucket) do
-            mark_pressed(out, value)
-        end
+        for _, value in ipairs(bucket) do mark_pressed(out, value) end
     end
-end
-local function read_gpio_pin(pin)
-    if not pin then return nil end
-    local readers = { 'gpio_read', 'gpio_get', 'digital_read', 'pin_read', 'read_gpio' }
-    for _, reader_name in ipairs(readers) do
-        local reader = onion[reader_name]
-        if type(reader) == 'function' then
-            local ok, value = pcall(reader, pin)
-            if ok and value ~= nil then return value end
-        end
-    end
-    if type(onion.gpio) == 'function' then
-        local ok, value = pcall(onion.gpio, pin)
-        if ok and value ~= nil then return value end
-    end
-    return nil
-end
-local function read_gpio_button(name)
-    local pins = rawget(_G, 'ORPG_BUTTON_PINS') or DEFAULT_BUTTON_PINS
-    local value = read_gpio_pin(pins[name])
-    return value == false or value == 0 or value == '0' or value == 'LOW'
 end
 local function normalised_buttons()
     local raw = {}
@@ -4050,268 +1062,199 @@ local function normalised_buttons()
         local ok, value = pcall(_raw_buttons)
         if ok and value ~= nil then raw = value end
     end
-    local out = {
-        up = false, down = false, left = false, right = false,
-        select = false, cancel = false,
-    }
+    local out = { up = false, down = false, left = false, right = false, select = false, cancel = false }
     if type(raw) == 'string' then
         mark_pressed(out, raw)
     elseif type(raw) == 'table' then
         for name, aliases in pairs(BUTTON_ALIASES) do
-            out[name] = read_named_button(raw, aliases)
+            out[name] = read_named_button(raw, aliases) or read_mask_button(raw, name)
         end
-        for _, value in ipairs(raw) do
-            mark_pressed(out, value)
-        end
+        for _, value in ipairs(raw) do mark_pressed(out, value) end
         merge_button_bucket(out, raw.pressed)
         merge_button_bucket(out, raw.down)
         merge_button_bucket(out, raw.held)
         merge_button_bucket(out, raw.buttons)
     end
-    for name in pairs(out) do
-        if not out[name] and read_gpio_button(name) then
-            out[name] = true
-        end
-    end
     return out
 end
 onion.buttons = normalised_buttons
-local GAME_VERSION  = '0.1.0'
-local LOOP_SLEEP_MS = 80    -- main loop tick rate (matches firmware examples)
-local BEACON_TIMEOUT_MS = 30000  -- how long to wait for a beacon hello
-local operative = {
-    hardware_id = onion.hardware_id(),
-    onion_id    = (type(onion.onion_id) == 'function') and (onion.onion_id() ~= 0 and onion.onion_id() or nil) or nil,
-    callsign    = nil,
-    act         = 0,
-    hp          = 100,
-    max_hp      = 100,
-    onions      = '?',   -- string to handle "?" before first server sync
-    inventory   = {},    -- array of catalogId strings
-    flags       = {},
-}
-local ctx = {
-    hardware_id   = operative.hardware_id,
-    onion_id      = operative.onion_id,
-    operative     = operative,
-    net           = net,
-    ui            = ui,
-    caps          = caps,
-    proto         = proto,
-    challenge_id  = nil,   -- set when a beacon hello is received
-}
-local game_phase = 'boot'   -- boot | title | searching | hud | challenge | error
-local error_msg   = ''
-local beacon_mac  = nil    -- current beacon's ESP-NOW MAC
-local beacon_id   = nil    -- current beacon's id string
-local last_tick   = 0
-local function espnow_ready()
-    if not operative.espnow_started then
-        local ok, err = onion.espnow_start()
-        if not ok then
-            error_msg = 'ESP-NOW start failed: ' .. tostring(err)
-            game_phase = 'error'
-            return false
-        end
-        operative.espnow_started = true
-        onion.log('oRPG: ESP-NOW started, MAC ' .. onion.espnow_mac())
-    end
-    return true
-end
-local function apply_server_state(body)
-    if not body then return end
-    if body.act         then operative.act         = body.act         end
-    if body.hp          then operative.hp          = body.hp          end
-    if body.maxHp       then operative.max_hp      = body.maxHp       end
-    if body.onions      then operative.onions      = body.onions      end
-    if body.callsign    then operative.callsign    = body.callsign    end
-    if body.inventory   then operative.inventory   = body.inventory   end
-    if body.flags       then operative.flags       = body.flags       end
-    ctx.onion_id = body.onionId or ctx.onion_id
-end
-local function identify()
-    local body = {
-        h = operative.hardware_id,
-        o = operative.onion_id,
+local function local_frame(title, lines, footer)
+    local ops = {
+        { k = 'clear' },
+        { k = 'rect', x = 2, y = 2, w = ui.W - 4, h = ui.H - 4 },
+        { k = 'text', x = 8, y = 8, f = 'bold', t = title },
+        { k = 'line', x1 = 4, y1 = 24, x2 = ui.W - 4, y2 = 24 },
+        { k = 'lines', x = 8, y = 34, lh = ui.LH_SMALL, lines = lines or {} },
     }
-    local resp, err = net.request(proto.MsgType.OPERATIVE_IDENTIFY, body, 12000)
-    if err then
-        onion.log('oRPG: identify failed: ' .. err)
+    if footer then
+        ops[#ops + 1] = { k = 'line', x1 = 4, y1 = ui.H - 20, x2 = ui.W - 4, y2 = ui.H - 20 }
+        ops[#ops + 1] = { k = 'text', x = 8, y = ui.H - 14, f = 'small', t = footer }
+    end
+    ui.render_frame({ v = 1, ops = ops })
+end
+local function espnow_payload(msg)
+    if type(msg) ~= 'table' then return nil end
+    if type(msg.payload) == 'string' then return msg.payload end
+    if type(msg.message) == 'string' then return msg.message end
+    return nil
+end
+local function hello_min_rssi(body)
+    if type(body) ~= 'table' then return BEACON_DEFAULT_MIN_RSSI end
+    local advertised = body.r or body.minRssi or body.min_rssi
+    if type(advertised) == 'number' then return advertised end
+    return BEACON_DEFAULT_MIN_RSSI
+end
+local hello_reassembler = proto.new_reassembler()
+local function decode_beacon_hello(msg)
+    local payload = espnow_payload(msg)
+    if not payload then return nil end
+    local frame = proto.decode_frame(payload)
+    if not frame or frame.msg_type ~= proto.MsgType.BEACON_HELLO then return nil end
+    local body = hello_reassembler:push(frame)
+    if type(body) ~= 'table' then return nil end
+    local rssi = type(msg.rssi) == 'number' and msg.rssi or nil
+    local min_rssi = hello_min_rssi(body)
+    return {
+        id = body.b,
+        challenge_id = body.c,
+        mac = msg.mac or body.m,
+        label = body.l,
+        rssi = rssi,
+        min_rssi = min_rssi,
+        seen_at = now_ms(),
+        in_range = (rssi == nil) or (rssi >= min_rssi),
+    }
+end
+local function caps_payload()
+    return {
+        sign = caps.sign == true,
+        secRng = caps.secRng == true,
+        voice = caps.voice == true,
+        speaker = caps.speaker == true,
+        subghz = caps.subghz == true,
+        mqtt = caps.mqtt == true,
+        gpio = hardware.capabilities().gpio == true,
+    }
+end
+local function beacon_payload()
+    if not beacon then return nil end
+    return {
+        id = beacon.id,
+        challengeId = beacon.challenge_id,
+        mac = beacon.mac,
+        rssi = beacon.rssi,
+        minRssi = beacon.min_rssi,
+    }
+end
+local function build_move(kind, payload)
+    move_seq = (move_seq + 1) % 1000000
+    onion_id = identity.onion_id() or onion_id
+    addresses = identity.addresses()
+    local move = {
+        h = hardware_id,
+        o = onion_id,
+        a = addresses,
+        b = beacon_payload(),
+        k = kind,
+        p = payload,
+        q = move_seq,
+        t = now_ms(),
+        caps = caps_payload(),
+    }
+    move.sig = identity.sign_move(move)
+    return move
+end
+local function render_server_frame(frame)
+    if type(frame) ~= 'table' or type(frame.ops) ~= 'table' then return false end
+    if frame.id and frame.id == last_render_id then return true end
+    local ok = ui.render_frame(frame)
+    if ok then last_render_id = frame.id end
+    return ok
+end
+local function submit_move(kind, payload, timeout_ms, process_io)
+    if process_io == nil then process_io = true end
+    if not beacon or not beacon.mac then return nil, 'no beacon' end
+    net.init(beacon.mac)
+    local body = build_move(kind, payload)
+    local resp, err = net.request(proto.MsgType.BADGE_MOVE, body, timeout_ms or 10000)
+    if err then return nil, err end
+    render_server_frame(resp)
+    if process_io and type(resp) == 'table' and type(resp.io) == 'table' then
+        local io_result = hardware.collect(resp.io)
+        if io_result then
+            submit_move('io', io_result, 12000, false)
+        end
+    end
+    return resp, nil
+end
+local function first_pressed(buttons, last)
+    for _, name in ipairs({ 'select', 'cancel', 'up', 'down', 'left', 'right' }) do
+        if buttons[name] and not (last and last[name]) then return name end
+    end
+    return nil
+end
+local function espnow_ready()
+    local ok, err = onion.espnow_start()
+    if not ok then
+        local_frame('oRPG ERROR', { 'ESP-NOW start failed:', tostring(err) }, '[CANCEL] Exit')
         return false
     end
-    apply_server_state(resp)
-    onion.log('oRPG: identified — act ' .. tostring(operative.act))
+    onion.log('oRPG thin: ESP-NOW started')
     return true
 end
-local function wait_for_beacon_hello(timeout_ms)
-    local deadline = timeout_ms or BEACON_TIMEOUT_MS
-    local reassembler = proto.new_reassembler()
-    while deadline > 0 do
-        local slice = math.min(deadline, 2000)
-        local msg   = onion.espnow_receive(slice)
-        if msg then
-            local frame, err = proto.decode_frame(msg.message)
-            if frame and frame.msg_type == proto.MsgType.BEACON_HELLO then
-                local body = reassembler:push(frame)
-                if body then
-                    return body, msg.mac
-                end
-            end
-        end
-        deadline = deadline - slice
-    end
-    return nil, nil
-end
-local function draw_hud()
-    onion.clear_display()
-    ui.border()
-    ui.title('ONION RPG  v' .. GAME_VERSION, 4)
-    ui.divider(16)
-    local callsign = operative.callsign or operative.hardware_id:sub(1, 12)
-    onion.display_text('Op: ' .. callsign, 6, 22, { font = 'bold', clear = false })
-    local act_str = 'Act ' .. operative.act
-    onion.display_text(act_str,
-        ui.W - #act_str * ui.FONT_BOLD_W - 6, 22,
-        { font = 'bold', clear = false })
-    ui.divider(34)
-    ui.hp_bar(6, 52, 110, 'HP', operative.hp, operative.max_hp)
-    local onion_str = 'Onions: ' .. tostring(operative.onions)
-    onion.display_text(onion_str, ui.W - #onion_str * ui.FONT_SMALL_W - 6, 40,
-        { font = 'small', clear = false })
-    local inv_line = ''
-    for i = 1, math.min(8, #operative.inventory) do
-        local id = operative.inventory[i]
-        inv_line = inv_line .. '[' .. id:sub(1, 3) .. ']'
-    end
-    if #inv_line > 0 then
-        onion.display_text(inv_line, 6, 68, { font = 'small', clear = false })
-    else
-        onion.display_text('(no items)', 6, 68, { font = 'small', clear = false })
-    end
-    ui.divider(80)
-    onion.display_text('Searching for beacon...', 6, 86, { font = 'small', clear = false })
-    ui.divider(ui.H - 18)
-    onion.display_text('[CANCEL] exit oRPG', 6, ui.H - 14,
-        { font = 'small', clear = false })
-end
-local function draw_title()
-    onion.clear_display()
-    ui.border(3)
-    ui.title('THE GREAT', 10)
-    ui.title('ONION SHORTAGE', 26)
-    ui.divider(44)
-    local lines = {
-        'DEEPDISH speaks:',
-        '"Chicago belongs to ME, champ.',
-        ' Every onion: mine.',
-        ' Every fountain: Malort.',
-        ' Do something about it."',
-    }
-    ui.body_text(lines, 6, 50, ui.LH_SMALL, 'small')
-    ui.divider(ui.H - 26)
-    onion.display_text('ONION DAO  ' .. GAME_VERSION, 6, ui.H - 20,
-        { font = 'small', clear = false })
-    onion.display_text('[SELECT] Begin  [CANCEL] Exit', 6, ui.H - 10,
-        { font = 'small', clear = false })
-end
-local function draw_error()
-    onion.clear_display()
-    ui.border()
-    ui.title('!! ERROR !!', 20)
-    local lines = ui.wrap_text(error_msg, 38)
-    ui.body_text(lines, 6, 50)
-    ui.divider(ui.H - 20)
-    onion.display_text('[CANCEL] Exit', 6, ui.H - 14,
-        { font = 'small', clear = false })
-end
-local last_buttons = nil
-draw_title()
-game_phase = 'title'
+local_frame('ONION RPG', {
+    'Server-owned adventure runtime.',
+    'Badge mode: sign, ping, render.',
+    '',
+    'Looking for nearby beacons...',
+}, GAME_VERSION)
+if not espnow_ready() then return end
+last_buttons = onion.buttons()
 while true do
+    local now = now_ms()
     local buttons = onion.buttons()
-    local now     = os.clock and math.floor(os.clock() * 1000) or 0
-    local dt      = now - last_tick
-    last_tick     = now
-    if buttons.cancel and (game_phase == 'title' or game_phase == 'error') then
-        onion.log('oRPG: exit requested')
-        onion.release_display()
-        return
-    end
-    if game_phase == 'title' then
-        if buttons.select and not (last_buttons and last_buttons.select) then
-            if espnow_ready() then
-                draw_hud()
-                game_phase = 'searching'
-            end
-        end
-    elseif game_phase == 'searching' then
-        local msg = onion.espnow_receive(LOOP_SLEEP_MS)
-        if msg then
-            local frame, frame_err = proto.decode_frame(msg.message)
-            if frame and frame.msg_type == proto.MsgType.BEACON_HELLO then
-                local reas = proto.new_reassembler()
-                local body = reas:push(frame)
-                if body then
-                    onion.log('oRPG: BEACON_HELLO from ' .. (body.b or '?')
-                        .. ' challenge ' .. tostring(body.c))
-                    beacon_mac  = msg.mac
-                    beacon_id   = body.b
-                    ctx.challenge_id = body.c
-                    net.init(beacon_mac)
-                    onion.clear_display()
-                    onion.display_lines({ 'Beacon found!', 'Identifying...' },
-                        6, 70, 18, { font = 'bold', clear = false })
-                    if identify() then
-                        game_phase = 'hud'
-                        draw_hud()
-                    else
-                        error_msg  = 'Identify failed'
-                        game_phase = 'error'
-                        draw_error()
-                    end
+    local pressed = first_pressed(buttons, last_buttons)
+    local msg = onion.espnow_receive(LOOP_SLEEP_MS)
+    if msg then
+        local seen = decode_beacon_hello(msg)
+        if seen then
+            beacon = seen
+            if seen.in_range then
+                net.init(seen.mac)
+                if now - last_beacon_ping > BEACON_PING_MS then
+                    last_beacon_ping = now
+                    submit_move('beacon_ping', {
+                        event = 'seen',
+                        label = seen.label,
+                    }, 12000)
                 end
+            else
+                local_frame('MOVE CLOSER', {
+                    seen.label or seen.id or 'Beacon detected',
+                    'Signal ' .. tostring(seen.rssi or '?') ..
+                        ' / need ' .. tostring(seen.min_rssi) .. ' dBm',
+                }, GAME_VERSION)
             end
-        else
-            draw_hud()
         end
-        if buttons.cancel and not (last_buttons and last_buttons.cancel) then
+    elseif beacon and now - beacon.seen_at > BEACON_STALE_MS then
+        beacon = nil
+        local_frame('ONION RPG', {
+            'Beacon signal lost.',
+            'Looking for nearby beacons...',
+        }, GAME_VERSION)
+    end
+    if pressed then
+        if pressed == 'cancel' and not beacon then
             onion.release_display()
             return
         end
-    elseif game_phase == 'hud' then
-        if buttons.select and not (last_buttons and last_buttons.select) then
-            if ctx.challenge_id then
-                local ok, err = router.push(ctx.challenge_id, ctx)
-                if ok then
-                    game_phase = 'challenge'
-                else
-                    error_msg  = 'Load error: ' .. tostring(err)
-                    game_phase = 'error'
-                    draw_error()
-                end
-            else
-                onion.log('oRPG: beacon has no challenge id')
-            end
+        local _, err = submit_move('button', { button = pressed }, 12000)
+        if err and beacon then
+            local_frame('NETWORK ERROR', { tostring(err):sub(1, 80) }, GAME_VERSION)
         end
-        if buttons.cancel and not (last_buttons and last_buttons.cancel) then
-            game_phase  = 'searching'
-            beacon_mac  = nil
-            beacon_id   = nil
-            ctx.challenge_id = nil
-            draw_hud()
-        end
-    elseif game_phase == 'challenge' then
-        local result = router.update(ctx, dt)
-        router.render(ctx)
-        if result == 'done' or result == 'error' then
-            router.pop()
-            local state_resp = net.request(proto.MsgType.PROGRESSION_STATE,
-                { h = operative.hardware_id }, 6000)
-            if state_resp then apply_server_state(state_resp) end
-            game_phase = 'hud'
-            draw_hud()
-        end
-    elseif game_phase == 'error' then
+    elseif beacon and now - last_heartbeat > HEARTBEAT_MS then
+        last_heartbeat = now
+        submit_move('heartbeat', {}, 8000)
     end
     last_buttons = buttons
     onion.sleep(LOOP_SLEEP_MS)

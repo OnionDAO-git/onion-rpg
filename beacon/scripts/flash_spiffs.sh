@@ -25,6 +25,7 @@ BEACON_ID=""
 WIFI_SSID=""
 WIFI_PASS=""
 LANDMARK=""
+MIN_RSSI=""
 ALLOW_EMPTY_API_KEY=0
 
 # ── Parse args ─────────────────────────────────────────────────────────
@@ -39,13 +40,14 @@ while [[ $# -gt 0 ]]; do
         --wifi-ssid)    WIFI_SSID="$2";     shift 2 ;;
         --wifi-pass)    WIFI_PASS="$2";     shift 2 ;;
         --landmark)     LANDMARK="$2";      shift 2 ;;
+        --min-rssi)     MIN_RSSI="$2";      shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
 
 if [[ -z "$CHALLENGE_ID" ]]; then
     echo "Usage: $0 --challenge <id> --port <dev> [options]"
-    echo "  Options: --server-url --api-key --allow-empty-api-key --beacon-id --wifi-ssid --wifi-pass --landmark"
+    echo "  Options: --server-url --api-key --allow-empty-api-key --beacon-id --wifi-ssid --wifi-pass --landmark --min-rssi"
     exit 1
 fi
 
@@ -91,7 +93,8 @@ cat > "$TMP_DIR/beacon_config.json" <<EOF
   "wifi_ssid":    "$WIFI_SSID",
   "wifi_pass":    "$WIFI_PASS",
   "server_url":   "$SERVER_URL",
-  "api_key":      "$API_KEY"
+  "api_key":      "$API_KEY"${MIN_RSSI:+,
+  "min_rssi":     $MIN_RSSI}
 }
 EOF
 echo "beacon_config.json:"

@@ -7,9 +7,7 @@
 --   Phase flow: intro → choosing → waiting → reply  (loop until pass)
 --                                                 ↘ done (on pass)
 --
--- Capability shim:
---   caps.http  → talk to server directly (onion.http_get/http_post via net), no beacon relay
---   else       → relay through beacon ESP-NOW (default)
+-- Comms route through the ESP-NOW beacon relay via net.request().
 --
 -- Gating: the badge screen checks ctx.operative.inventory for 'prompt_fragment_1'
 -- before showing the negotiate phase. The server enforces this too (via requires[]).
@@ -22,7 +20,6 @@ local archetypes = require('lib.archetypes')
 local ui         = require('lib.ui')
 local net        = require('lib.net')
 local proto      = require('lib.proto')
-local caps       = require('lib.caps')
 
 local CHALLENGE_ID   = '3.2'
 local CHALLENGE_NAME = 'The Freight Tunnels'

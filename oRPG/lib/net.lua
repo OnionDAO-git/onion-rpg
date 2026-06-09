@@ -7,9 +7,8 @@
 --   body, err = net.request(msg_type, body_table, timeout_ms?)
 --   net.send_frames(frames)      -- fire-and-forget, no reply expected
 --
--- For challenges that can reach the server directly (caps.http, i.e. the badge
--- exposes onion.http_get/http_post), callers use net.http_request() instead of
--- the ESP-NOW relay.
+-- oRPG always uses the ESP-NOW beacon relay for game traffic. The beacon owns
+-- server authentication; the badge must not carry server secrets.
 --
 -- Chunking & retries:
 --   Outgoing messages are encoded into <=240-byte frames via proto.encode().
@@ -128,61 +127,11 @@ function net.request(msg_type, body, timeout_ms)
 end
 
 -- ── http_request ─────────────────────────────────────────────────────────
--- Uses onion.http_post (caps.http == true) to talk directly to the game
--- server, bypassing the beacon relay.
--- body_table is the same logical shape as net.request() sends over ESP-NOW.
--- Returns decoded response body table, or nil, err.
---
--- The server accepts the same JSON envelopes whether they arrive via beacon
--- relay or direct HTTP (CONTRACTS §4).
+-- Disabled by design. Server auth belongs on the beacon/gateway, not in the
+-- badge Lua bundle. Use net.request() so traffic flows over ESP-NOW.
 
-function net.http_request(server_url, msg_type, body_table)
-    if not caps.http then
-        return nil, 'http cap not available'
-    end
-    -- wrap in the relay envelope format the server expects
-    local msg_id = next_msg_id()
-    local frames = proto.encode(msg_type, msg_id, body_table)
-
-    -- The direct-HTTP path carries one logical message per POST. Large payloads
-    -- must still go through the beacon relay (which chunks over ESP-NOW).
-    if #frames > 1 then
-        return nil, 'http path: message too large (use beacon relay)'
-    end
-
-    local frame_bytes = frames[1]
-    -- encode as hex string for transport (no base64 in the Lua sandbox)
-    local hex_parts = {}
-    for i = 1, #frame_bytes do
-        hex_parts[i] = string.format('%02x', frame_bytes:byte(i))
-    end
-    local frame_hex = table.concat(hex_parts)
-
-    local payload = proto.json_encode({
-        direct = true,
-        msgType = msg_type,
-        msgId = msg_id,
-        frameHex = frame_hex,
-    })
-
-    -- onion.http_post(url, body, opts) -> { status, body } | nil, err
-    local resp, err = onion.http_post(server_url .. '/api/relay', payload, {
-        content_type = 'application/json',
-        timeout_ms = 15000,
-    })
-
-    if not resp then
-        return nil, 'http error: ' .. tostring(err)
-    end
-    if resp.status ~= 200 then
-        return nil, 'http error: status ' .. tostring(resp.status)
-    end
-
-    local resp_body = proto.json_decode(resp.body)
-    if not resp_body then
-        return nil, 'http: could not decode response'
-    end
-    return resp_body, nil
+function net.http_request()
+    return nil, 'direct HTTP disabled: use ESP-NOW beacon relay'
 end
 
 return net

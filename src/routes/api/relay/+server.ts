@@ -29,6 +29,7 @@ import type {
 	MerchantInputBody,
 	NpcDialogueTurnBody,
 	BeaconHelloBody,
+	BadgeMoveBody,
 	ErrorBody
 } from '$lib/shared/protocol';
 import {
@@ -41,6 +42,7 @@ import { getChallenge } from '$lib/server/challenges/registry';
 import { applyRoll, openCombat } from '$lib/server/engine/combat';
 import { listInventory } from '$lib/server/engine/inventory';
 import { sql } from '$lib/server/db/index';
+import { handleBadgeMove } from '$lib/server/badge/runtime';
 import type { RequestHandler } from './$types';
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -69,6 +71,9 @@ async function dispatch(
 
 		case MsgType.OPERATIVE_IDENTIFY:
 			return handleIdentify(msgId, body as OperativeIdentifyBody);
+
+		case MsgType.BADGE_MOVE:
+			return handleBadgeMove(beaconId, msgId, body as BadgeMoveBody, encodeResponse);
 
 		case MsgType.CHALLENGE_BEGIN:
 			return handleChallengeBegin(msgId, body as ChallengeBeginBody);
