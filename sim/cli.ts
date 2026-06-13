@@ -52,6 +52,7 @@ import { SimBeacon, spawnBeacons } from './beacon';
 import { runScenario, runAll } from './runner';
 import smokeScenario from './scenarios/smoke';
 import ketchupGauntletScenario from './scenarios/0.1-ketchup-gauntlet';
+import bankBustScenario from './scenarios/mg-bankbust';
 import type { ScenarioFn } from './runner';
 
 // ── Scenario registry ────────────────────────────────────────────────────────
@@ -59,6 +60,7 @@ import type { ScenarioFn } from './runner';
 
 const SCENARIOS: Record<string, ScenarioFn> = {
 	'0.1': ketchupGauntletScenario,
+	'mg-bankbust': bankBustScenario,
 	smoke: smokeScenario
 };
 
@@ -188,7 +190,12 @@ async function cmdTest(target: string, args: ParsedArgs): Promise<void> {
 	};
 
 	if (target === 'all') {
-		const list = Object.entries(SCENARIOS).map(([id, fn]) => ({ challengeId: id, scenario: fn }));
+		// 'smoke' is a generic pipeline helper that must be run against a real
+		// challengeId via `test smoke --challenge <id>`; it has no challenge of
+		// its own, so exclude it from the full-suite run.
+		const list = Object.entries(SCENARIOS)
+			.filter(([id]) => id !== 'smoke')
+			.map(([id, fn]) => ({ challengeId: id, scenario: fn }));
 		const results = await runAll(list, runOpts);
 		const failed = results.filter((r) => !r.passed).length;
 		process.exit(failed > 0 ? 1 : 0);

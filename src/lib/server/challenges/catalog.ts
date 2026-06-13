@@ -170,6 +170,20 @@ export const CATALOG: Record<string, CatalogEntry> = {
 			'Clearance to cross the Chicago River via the bascule bridge network. ' +
 			'Proves you can lower a 3,000-ton bridge leaf using a four-word sequence. ' +
 			"DEEPDISH note: 'Ya earned it, I guess.'"
+	},
+
+	// ── Minigame rewards (skeleton) ──────────────────────────────────────────
+
+	/**
+	 * bankbust_chip — placeholder reward for the mg-bankbust push-your-luck
+	 * minigame (skeleton S2). Neutral starter item proving the pipeline carries
+	 * our own content; real economy items land in Part B.
+	 */
+	bankbust_chip: {
+		catalogId: 'bankbust_chip',
+		kind: 'item',
+		name: 'Bank-or-Bust Chip',
+		description: 'A plastic chip won at the Bank-or-Bust table. Proof you knew when to walk away.'
 	}
 };
 
