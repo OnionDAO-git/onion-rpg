@@ -248,3 +248,30 @@ CREATE TABLE IF NOT EXISTS storyteller_transcripts (
 );
 CREATE INDEX IF NOT EXISTS storyteller_transcripts_session_idx
 	ON storyteller_transcripts (session_id, turn);
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- B4 — The Colony (global collective layer). One shared singleton level; a
+-- per-level ledger of distinct contributors detects the Nth contributor (level
+-- up for everyone) and identifies the early movers (first-mover chest).
+-- onion_supply_gauge is left dormant; colony_state is the source of truth.
+-- ─────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS colony_state (
+	id              INTEGER PRIMARY KEY DEFAULT 1,
+	level           INTEGER NOT NULL DEFAULT 0,
+	updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+	CONSTRAINT colony_state_singleton CHECK (id = 1)
+);
+INSERT INTO colony_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS colony_contributions (
+	id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+	-- The colony level this contribution counted toward.
+	colony_level    INTEGER NOT NULL,
+	operative_id    UUID NOT NULL REFERENCES operatives(id) ON DELETE CASCADE,
+	cores           INTEGER NOT NULL,
+	created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+	-- One counted contribution per operative per level (distinct-contributor rule).
+	UNIQUE (colony_level, operative_id)
+);
+CREATE INDEX IF NOT EXISTS colony_contributions_level_idx
+	ON colony_contributions (colony_level);

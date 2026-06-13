@@ -104,6 +104,7 @@ const challenge: ChallengeDescriptor = {
 	requires: [],
 	rewards: [
 		{ kind: 'inventory', catalogId: 'bankbust_chip' },
+		{ kind: 'inventory', catalogId: 'cores', qty: 3 },
 		{ kind: 'xp', amount: 20 }
 	],
 	beaconConfig: { beaconIdHint: 'b-bankbust', landmark: 'Back-alley pip table' },

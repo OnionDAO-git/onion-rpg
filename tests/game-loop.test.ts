@@ -43,7 +43,9 @@ function freshStore() {
     challenge_attempts: new Map<string, any>(),
     combat_sessions: new Map<string, any>(),
     onion_rewards: new Map<string, any>(),  // key: externalId
-    gauge: { current: 0, max: 100000 }
+    gauge: { current: 0, max: 100000 },
+    colony: { level: 0 },
+    colony_contributions: [] as Array<{ colonyLevel: number; operativeId: string; cores: number }>
   };
 }
 function resetDb() { _db = freshStore(); }
@@ -220,6 +222,31 @@ function buildSql() {
     if (n.includes('select current, max from onion_supply_gauge')) { return [{ current: _db.gauge.current, max: _db.gauge.max }]; }
     if (n.includes('update onion_supply_gauge')) { _db.gauge.current = Math.min(_db.gauge.max, _db.gauge.current + (values[0] as number)); return [{ current: _db.gauge.current, max: _db.gauge.max }]; }
 
+    // colony (B4)
+    if (n.includes('select level from colony_state')) { return [{ level: _db.colony.level }]; }
+    if (n.includes('update colony_state set level')) {
+      if (_db.colony.level === (values[0] as number)) { _db.colony.level += 1; return [{ level: _db.colony.level }]; }
+      return [];
+    }
+    if (n.includes('select 1 as one from colony_contributions')) {
+      const exists = _db.colony_contributions.some((c) => c.colonyLevel === (values[0] as number) && c.operativeId === (values[1] as string));
+      return exists ? [{ one: 1 }] : [];
+    }
+    if (n.includes('insert into colony_contributions')) {
+      const [lvl, opId, cores] = values as [number, string, number];
+      if (!_db.colony_contributions.some((c) => c.colonyLevel === lvl && c.operativeId === opId)) {
+        _db.colony_contributions.push({ colonyLevel: lvl, operativeId: opId, cores });
+      }
+      return [];
+    }
+    if (n.includes('select count(*)::int as count from colony_contributions')) {
+      const count = _db.colony_contributions.filter((c) => c.colonyLevel === (values[0] as number)).length;
+      return [{ count }];
+    }
+    if (n.includes('select operative_id from colony_contributions')) {
+      return _db.colony_contributions.filter((c) => c.colonyLevel === (values[0] as number)).map((c) => ({ operativeId: c.operativeId }));
+    }
+
     console.warn(`[db-mock] unhandled: ${n.slice(0, 120)}`);
     return [];
   }
@@ -304,6 +331,8 @@ let grantItem: any, listCatalogIds: any;
 let getGauge: any;
 let getEnergy: any, spendEnergy: any, skipEnergyWithOnions: any, ENERGY_SKIP_COST: any, MAX_ENERGY: any;
 let equip: any, getLoadout: any, getLoadoutStats: any, openChest: any, forge: any, weightedPick: any;
+let getColonyLevel: any, getColonyStatus: any, colonyLevelAtLeast: any, contributeCores: any,
+    COLONY_CONTRIBUTORS_PER_LEVEL: any, CORES_REQUIRED_PER_CONTRIBUTION: any;
 let getChallenge: any;
 let encodeMessage: any, decodeFrame: any, Reassembler: any, MsgType: any;
 let SimChannel: any, VirtualBadge: any;
@@ -319,6 +348,9 @@ beforeAll(async () => {
     await import(`${ROOT}/src/lib/server/engine/energy`));
   ({ equip, getLoadout, getLoadoutStats, openChest, forge, weightedPick } =
     await import(`${ROOT}/src/lib/server/engine/gear`));
+  ({ getColonyLevel, getColonyStatus, colonyLevelAtLeast, contributeCores,
+     COLONY_CONTRIBUTORS_PER_LEVEL, CORES_REQUIRED_PER_CONTRIBUTION } =
+    await import(`${ROOT}/src/lib/server/engine/colony`));
   ({ getChallenge } = await import(`${ROOT}/src/lib/server/challenges/registry`));
 
   // Load challenge impls — each calls registerChallenge() as a side effect
@@ -993,5 +1025,61 @@ describe('Gear / chests / forge (B3)', () => {
     // roll 0 → base dmg 1; +100 attack = 101 > 5 enemyHp → won this wave.
     const after = await applyRoll(session.id, { wave: 1, roll: 0, dmg: 0, sig: '' }, undefined, { attack: 100, defense: 0 });
     expect(after.status).toBe('won');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUITE 9 — The Colony (B4)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('The Colony — collective layer (B4)', () => {
+  beforeEach(() => { resetDb(); clearMockRewards(); });
+
+  async function freshContributor(name: string) {
+    const op = await resolveOperative(name);
+    await grantItem(op.id, 'cores', { qty: CORES_REQUIRED_PER_CONTRIBUTION });
+    return op;
+  }
+
+  it('starts at level 0 with no contributors', async () => {
+    expect(await getColonyLevel()).toBe(0);
+    expect(await getColonyStatus()).toEqual({ level: 0, contributors: 0, needed: COLONY_CONTRIBUTORS_PER_LEVEL });
+  });
+
+  it('contributing spends Cores and records one contributor', async () => {
+    const op = await freshContributor('hw-col-1');
+    const r = await contributeCores(op.id);
+    expect(r.contributors).toBe(1);
+    expect(r.leveledUp).toBe(false);
+    expect(await listCatalogIds(op.id)).not.toContain('cores'); // spent
+    expect((await getColonyStatus()).contributors).toBe(1);
+  });
+
+  it('the same operative cannot contribute twice at one level', async () => {
+    const op = await resolveOperative('hw-col-dup');
+    await grantItem(op.id, 'cores', { qty: CORES_REQUIRED_PER_CONTRIBUTION * 2 });
+    await contributeCores(op.id);
+    await expect(contributeCores(op.id)).rejects.toThrow(/already contributed/i);
+  });
+
+  it('contributing without enough Cores is rejected', async () => {
+    const op = await resolveOperative('hw-col-poor');
+    await grantItem(op.id, 'cores', { qty: CORES_REQUIRED_PER_CONTRIBUTION - 1 });
+    await expect(contributeCores(op.id)).rejects.toThrow(/need .* cores/i);
+  });
+
+  it('Nth distinct contributor levels the Colony and chests every contributor', async () => {
+    const ops = [];
+    for (let i = 0; i < COLONY_CONTRIBUTORS_PER_LEVEL; i++) ops.push(await freshContributor(`hw-col-n${i}`));
+    let last: any;
+    for (const op of ops) last = await contributeCores(op.id);
+    expect(last.leveledUp).toBe(true);
+    expect(last.level).toBe(1);
+    expect(await getColonyLevel()).toBe(1);
+    expect(await colonyLevelAtLeast(1)).toBe(true);
+    // every contributor of the completed level got a first-mover chest
+    for (const op of ops) {
+      expect(await listCatalogIds(op.id)).toContain('colony_chest');
+    }
   });
 });

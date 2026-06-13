@@ -221,5 +221,13 @@ constant in code so it can be retuned without structural change.
 | Energy refill delay (from 0) | 30 min | `ENERGY_REFILL_MS` |
 | Energy skip price (onions) | 5 | `ENERGY_SKIP_COST` |
 | XP per level | 100 (level = 1 + ⌊xp/100⌋) | `engine/index.ts` `XP_PER_LEVEL` |
-| Colony contributors per level (`N`) | 5 | B4 |
+| Colony contributors per level (`N`) | 5 | `engine/colony.ts` `COLONY_CONTRIBUTORS_PER_LEVEL` |
+| Cores per contribution | 3 | `engine/colony.ts` `CORES_REQUIRED_PER_CONTRIBUTION` |
 | Player HP full-regen delay | TBD | B6 |
+
+**Colony meter location (B4 decision):** a dedicated `colony_state` singleton +
+`colony_contributions` ledger is the source of truth (cleanest for discrete
+levels + the distinct-contributor / first-mover rules). `onion_supply_gauge` is
+left dormant rather than repurposed. Cores are a stackable `inventory` item
+(`cores`); the first-mover reward is `colony_chest` (reuses the B3 chest loot
+framework).

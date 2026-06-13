@@ -238,6 +238,30 @@ export const CATALOG: Record<string, CatalogEntry> = {
 				{ catalogId: 'kevlar_apron', weight: 1 }
 			]
 		}
+	},
+
+	// ── Colony resource + reward (B4) ────────────────────────────────────────
+
+	/** Cores — the collective resource contributed to the Colony. Stackable. */
+	cores: {
+		catalogId: 'cores',
+		kind: 'item',
+		name: 'Core',
+		description: 'A warm, faintly humming Core. Feed them to the Colony to push the whole community to the next level.'
+	},
+	/** First-mover chest granted to a level's contributors when it advances. */
+	colony_chest: {
+		catalogId: 'colony_chest',
+		kind: 'item',
+		name: 'Colony Cache',
+		description: 'A reward cache for the operatives who pushed the Colony to its next level. Open it for gear.',
+		chest: {
+			table: [
+				{ catalogId: 'forged_blade', weight: 2 },
+				{ catalogId: 'kevlar_apron', weight: 2 },
+				{ catalogId: 'rusty_shiv', weight: 1 }
+			]
+		}
 	}
 };
 
