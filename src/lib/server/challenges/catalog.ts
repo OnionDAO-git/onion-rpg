@@ -184,6 +184,60 @@ export const CATALOG: Record<string, CatalogEntry> = {
 		kind: 'item',
 		name: 'Bank-or-Bust Chip',
 		description: 'A plastic chip won at the Bank-or-Bust table. Proof you knew when to walk away.'
+	},
+
+	// ── Gear framework starter set (B3) ──────────────────────────────────────
+	// A few example items per slot so the gear/chest/forge framework is exercised;
+	// the full catalog is content-team work (see GAME_MECHANICS.md §6).
+
+	rusty_shiv: {
+		catalogId: 'rusty_shiv',
+		kind: 'item',
+		name: 'Rusty Shiv',
+		slot: 'weapon',
+		rarity: 'common',
+		stats: { attack: 3 },
+		description: 'A sharpened transit-card edge. Tetanus included at no extra charge.'
+	},
+	tin_pot_helm: {
+		catalogId: 'tin_pot_helm',
+		kind: 'item',
+		name: 'Tin-Pot Helm',
+		slot: 'head',
+		rarity: 'common',
+		stats: { defense: 2 },
+		description: 'A deep-dish pan worn as a helmet. Surprisingly aerodynamic.'
+	},
+	kevlar_apron: {
+		catalogId: 'kevlar_apron',
+		kind: 'item',
+		name: 'Kevlar Apron',
+		slot: 'body',
+		rarity: 'common',
+		stats: { hp: 10 },
+		description: "A line cook's apron rated for grease fires and worse."
+	},
+	forged_blade: {
+		catalogId: 'forged_blade',
+		kind: 'item',
+		name: 'Forged Blade',
+		slot: 'weapon',
+		rarity: 'uncommon',
+		stats: { attack: 7 },
+		description: 'Two rusty shivs, one hot forge, zero regrets.'
+	},
+	scrap_chest: {
+		catalogId: 'scrap_chest',
+		kind: 'item',
+		name: 'Scrap Chest',
+		description: 'A dented lockbox of salvage. Open it to roll for gear.',
+		chest: {
+			table: [
+				{ catalogId: 'rusty_shiv', weight: 3 },
+				{ catalogId: 'tin_pot_helm', weight: 2 },
+				{ catalogId: 'kevlar_apron', weight: 1 }
+			]
+		}
 	}
 };
 

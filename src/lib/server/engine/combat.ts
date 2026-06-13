@@ -33,6 +33,8 @@ export interface OpenCombatOpts {
 	wavesRequired?: number;
 	/** seconds until expiry for timed/endurance fights (3.1, 2.1). */
 	ttlSeconds?: number;
+	/** B3: extra max HP from equipped gear, added to operativeHp. Default 0. */
+	bonusHp?: number;
 }
 
 const DEFAULT_ENEMY_HP = 100;
@@ -58,7 +60,7 @@ export function serverRoll(): number {
 export async function openCombat(opts: OpenCombatOpts): Promise<CombatSession> {
 	const nonce = freshNonce();
 	const enemyHp = opts.enemyHp ?? DEFAULT_ENEMY_HP;
-	const operativeHp = opts.operativeHp ?? DEFAULT_OP_HP;
+	const operativeHp = (opts.operativeHp ?? DEFAULT_OP_HP) + (opts.bonusHp ?? 0);
 	const wavesRequired = opts.wavesRequired ?? DEFAULT_WAVES;
 
 	const expiresAt =
@@ -124,7 +126,9 @@ export function verifyRollSignature(
 export async function applyRoll(
 	sessionId: string,
 	incomingRoll?: Pick<CombatRoll, 'wave' | 'roll' | 'dmg' | 'sig'>,
-	attestPubkeyHex?: string
+	attestPubkeyHex?: string,
+	/** B3: equipped-gear bonuses. attack adds to player dmg; defense cuts incoming. */
+	bonus?: { attack?: number; defense?: number }
 ): Promise<CombatSession> {
 	// Load current session (with row-level lock to prevent concurrent races).
 	const [session] = await sql<CombatSession[]>`
@@ -146,6 +150,8 @@ export async function applyRoll(
 	}
 
 	const wave = session.wave + 1;
+	const atkBonus = bonus?.attack ?? 0;
+	const defBonus = bonus?.defense ?? 0;
 
 	// Determine player roll and damage.
 	let playerRoll: number;
@@ -163,16 +169,16 @@ export async function applyRoll(
 			});
 		}
 		// Re-derive damage from the raw roll to prevent tampering; ignore badge dmg.
-		playerDmg = rollDamage(playerRoll, 20);
+		playerDmg = rollDamage(playerRoll, 20) + atkBonus;
 	} else {
 		// Server-side fallback RNG.
 		playerRoll = serverRoll();
-		playerDmg = rollDamage(playerRoll, 20);
+		playerDmg = rollDamage(playerRoll, 20) + atkBonus;
 	}
 
-	// Enemy attacks back each turn.
+	// Enemy attacks back each turn; defense cuts it but a hit always lands (min 1).
 	const enemyRoll = serverRoll();
-	const enemyDmg = rollDamage(enemyRoll, 15);
+	const enemyDmg = Math.max(1, rollDamage(enemyRoll, 15) - defBonus);
 
 	const newEnemyHp = Math.max(0, session.enemyHp - playerDmg);
 	const newOpHp = Math.max(0, session.operativeHp - enemyDmg);

@@ -59,6 +59,34 @@ export async function grantItem(
 	return row;
 }
 
+/**
+ * Consume `qty` of an item from an operative's inventory (B3 — chests/forge).
+ * Decrements qty; deletes the row when it reaches 0. Returns true if the full
+ * amount was consumed, false if the operative didn't hold enough (no change).
+ */
+export async function consumeItem(
+	operativeId: string,
+	catalogId: string,
+	qty = 1
+): Promise<boolean> {
+	const [row] = await sql<{ qty: number }[]>`
+		SELECT qty FROM inventory WHERE operative_id = ${operativeId} AND catalog_id = ${catalogId}
+	`;
+	if (!row || row.qty < qty) return false;
+
+	if (row.qty === qty) {
+		await sql`
+			DELETE FROM inventory WHERE operative_id = ${operativeId} AND catalog_id = ${catalogId}
+		`;
+	} else {
+		await sql`
+			UPDATE inventory SET qty = qty - ${qty}
+			WHERE operative_id = ${operativeId} AND catalog_id = ${catalogId}
+		`;
+	}
+	return true;
+}
+
 /** All catalogIds an operative currently holds. */
 export async function listCatalogIds(operativeId: string): Promise<string[]> {
 	const rows = await sql<{ catalogId: string }[]>`

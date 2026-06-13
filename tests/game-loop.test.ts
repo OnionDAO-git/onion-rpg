@@ -82,7 +82,7 @@ function buildSql() {
     // game_state
     if (n.includes('insert into game_state') && n.includes('on conflict')) {
       const id = values[0] as string;
-      if (!_db.game_state.has(id)) _db.game_state.set(id, { operativeId: id, currentAct: 0, challengeStatus: {}, hp: 100, flags: {}, xp: 0, level: 1, energy: 7, energyExhaustedAt: null, updatedAt: new Date().toISOString() }); return [];
+      if (!_db.game_state.has(id)) _db.game_state.set(id, { operativeId: id, currentAct: 0, challengeStatus: {}, hp: 100, flags: {}, xp: 0, level: 1, energy: 7, energyExhaustedAt: null, loadout: {}, updatedAt: new Date().toISOString() }); return [];
     }
     // Both the full select (with hp/flags) and the act-only select (maybeAdvanceAct)
     if (n.includes('select current_act') && n.includes('game_state') && n.includes('operative_id')) {
@@ -116,6 +116,16 @@ function buildSql() {
       if (gs) { gs.energy = values[0] as number; gs.energyExhaustedAt = (values[1] as any) ?? null; gs.updatedAt = new Date().toISOString(); }
       return gs ? [{ energy: gs.energy }] : [];
     }
+    // loadout (B3)
+    if (n.includes('select loadout from game_state')) {
+      const gs = _db.game_state.get(values[0] as string);
+      return gs ? [{ loadout: gs.loadout ?? {} }] : [];
+    }
+    if (n.includes('update game_state set loadout')) {
+      const gs = _db.game_state.get(values[1] as string);
+      if (gs) { gs.loadout = (values[0] as any) ?? {}; gs.updatedAt = new Date().toISOString(); }
+      return [];
+    }
 
     // inventory
     if (n.includes('insert into inventory')) {
@@ -130,6 +140,19 @@ function buildSql() {
     }
     if (n.includes('select * from inventory where operative_id')) {
       return [..._db.inventory.entries()].filter(([k]) => k.startsWith((values[0] as string) + ':')).map(([, r]) => r);
+    }
+    // B3: gear/chest/forge inventory ops (keyed by `${opId}:${catalogId}`)
+    if (n.includes('select qty from inventory where operative_id')) {
+      const r = _db.inventory.get(`${values[0]}:${values[1]}`); return r ? [{ qty: r.qty }] : [];
+    }
+    if (n.includes('select 1 as one from inventory where operative_id')) {
+      const r = _db.inventory.get(`${values[0]}:${values[1]}`); return r ? [{ one: 1 }] : [];
+    }
+    if (n.includes('delete from inventory where operative_id')) {
+      _db.inventory.delete(`${values[0]}:${values[1]}`); return [];
+    }
+    if (n.includes('update inventory set qty = qty -')) {
+      const r = _db.inventory.get(`${values[1]}:${values[2]}`); if (r) r.qty -= values[0] as number; return [];
     }
 
     // challenge_attempts
@@ -280,6 +303,7 @@ let openCombat: any, applyRoll: any;
 let grantItem: any, listCatalogIds: any;
 let getGauge: any;
 let getEnergy: any, spendEnergy: any, skipEnergyWithOnions: any, ENERGY_SKIP_COST: any, MAX_ENERGY: any;
+let equip: any, getLoadout: any, getLoadoutStats: any, openChest: any, forge: any, weightedPick: any;
 let getChallenge: any;
 let encodeMessage: any, decodeFrame: any, Reassembler: any, MsgType: any;
 let SimChannel: any, VirtualBadge: any;
@@ -293,6 +317,8 @@ beforeAll(async () => {
   ({ getGauge } = await import(`${ROOT}/src/lib/server/onion/gauge`));
   ({ getEnergy, spendEnergy, skipEnergyWithOnions, ENERGY_SKIP_COST, MAX_ENERGY } =
     await import(`${ROOT}/src/lib/server/engine/energy`));
+  ({ equip, getLoadout, getLoadoutStats, openChest, forge, weightedPick } =
+    await import(`${ROOT}/src/lib/server/engine/gear`));
   ({ getChallenge } = await import(`${ROOT}/src/lib/server/challenges/registry`));
 
   // Load challenge impls — each calls registerChallenge() as a side effect
@@ -886,5 +912,86 @@ describe('Energy — pacing gate (B2)', () => {
     const burns = getMockRewards().filter((r: any) => r.externalId === `${op.id}:energy:skip:1`);
     expect(burns.length).toBe(1);
     expect(burns[0].amount).toBe(ENERGY_SKIP_COST);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUITE 8 — Gear / chests / forge (B3)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Gear / chests / forge (B3)', () => {
+  beforeEach(() => { resetDb(); clearMockRewards(); });
+
+  it('equip sets the slot and contributes stats', async () => {
+    const op = await resolveOperative('hw-gear-equip');
+    await grantItem(op.id, 'rusty_shiv');
+    const r = await equip(op.id, 'rusty_shiv');
+    expect(r.slot).toBe('weapon');
+    expect((await getLoadout(op.id)).weapon).toBe('rusty_shiv');
+    expect((await getLoadoutStats(op.id)).attack).toBe(3);
+  });
+
+  it('equip rejects unowned and non-gear', async () => {
+    const op = await resolveOperative('hw-gear-bad');
+    await expect(equip(op.id, 'rusty_shiv')).rejects.toThrow(/does not own/i);
+    await grantItem(op.id, 'grid_credential');
+    await expect(equip(op.id, 'grid_credential')).rejects.toThrow(/not equippable/i);
+  });
+
+  it('getLoadoutStats sums across slots', async () => {
+    const op = await resolveOperative('hw-gear-sum');
+    for (const id of ['rusty_shiv', 'tin_pot_helm', 'kevlar_apron']) { await grantItem(op.id, id); await equip(op.id, id); }
+    expect(await getLoadoutStats(op.id)).toEqual({ attack: 3, defense: 2, hp: 10 });
+  });
+
+  it('openChest consumes the chest and grants a table item', async () => {
+    const op = await resolveOperative('hw-chest');
+    await grantItem(op.id, 'scrap_chest');
+    const r = await openChest(op.id, 'scrap_chest');
+    expect(['rusty_shiv', 'tin_pot_helm', 'kevlar_apron']).toContain(r.granted);
+    const ids = await listCatalogIds(op.id);
+    expect(ids).not.toContain('scrap_chest'); // consumed
+    expect(ids).toContain(r.granted);         // granted
+  });
+
+  it('openChest fails when none held', async () => {
+    const op = await resolveOperative('hw-chest-none');
+    await expect(openChest(op.id, 'scrap_chest')).rejects.toThrow(/no scrap_chest/i);
+  });
+
+  it('forge consumes inputs and grants the output', async () => {
+    const op = await resolveOperative('hw-forge');
+    await grantItem(op.id, 'rusty_shiv', { qty: 2 });
+    const r = await forge(op.id, 'forged_blade');
+    expect(r.output).toBe('forged_blade');
+    const ids = await listCatalogIds(op.id);
+    expect(ids).toContain('forged_blade');
+    expect(ids).not.toContain('rusty_shiv'); // both inputs consumed
+  });
+
+  it('forge fails without enough inputs', async () => {
+    const op = await resolveOperative('hw-forge-short');
+    await grantItem(op.id, 'rusty_shiv', { qty: 1 });
+    await expect(forge(op.id, 'forged_blade')).rejects.toThrow(/missing forge input/i);
+  });
+
+  it('weightedPick returns the only entry of a single-entry table', () => {
+    expect(weightedPick([{ catalogId: 'rusty_shiv', weight: 1 }]).catalogId).toBe('rusty_shiv');
+  });
+
+  it('equipped hp raises starting combat HP', async () => {
+    const op = await resolveOperative('hw-gear-hp');
+    await grantItem(op.id, 'kevlar_apron'); await equip(op.id, 'kevlar_apron');
+    const { hp } = await getLoadoutStats(op.id);
+    const session = await openCombat({ operativeId: op.id, challengeId: '0.1', enemyHp: 1000, operativeHp: 100, wavesRequired: 1, bonusHp: hp });
+    expect(session.operativeHp).toBe(110);
+  });
+
+  it('attack bonus increases player damage in combat', async () => {
+    const op = await resolveOperative('hw-gear-atk');
+    const session = await openCombat({ operativeId: op.id, challengeId: '0.1', enemyHp: 5, operativeHp: 100, wavesRequired: 1 });
+    // roll 0 → base dmg 1; +100 attack = 101 > 5 enemyHp → won this wave.
+    const after = await applyRoll(session.id, { wave: 1, roll: 0, dmg: 0, sig: '' }, undefined, { attack: 100, defense: 0 });
+    expect(after.status).toBe('won');
   });
 });

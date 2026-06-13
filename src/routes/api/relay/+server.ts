@@ -41,6 +41,7 @@ import {
 import { getChallenge } from '$lib/server/challenges/registry';
 import { applyRoll, openCombat } from '$lib/server/engine/combat';
 import { getEnergy, MAX_ENERGY } from '$lib/server/engine/energy';
+import { getLoadoutStats } from '$lib/server/engine/gear';
 import { listInventory } from '$lib/server/engine/inventory';
 import { sql } from '$lib/server/db/index';
 import { handleBadgeMove } from '$lib/server/badge/runtime';
@@ -221,6 +222,7 @@ async function handleCombatRoll(
 			wavesRequired?: number;
 			ttlSeconds?: number;
 		};
+		const openStats = await getLoadoutStats(attempt.operativeId);
 		const opened = await openCombat({
 			operativeId: attempt.operativeId,
 			challengeId: body.c,
@@ -228,7 +230,8 @@ async function handleCombatRoll(
 			enemyHp: combat.enemyHp ?? combat.enemyHpPerWave?.[0],
 			operativeHp: combat.operativeHp,
 			wavesRequired: combat.wavesRequired,
-			ttlSeconds: combat.ttlSeconds
+			ttlSeconds: combat.ttlSeconds,
+			bonusHp: openStats.hp
 		});
 		return encodeResponse(MsgType.COMBAT_ROLL_RESPONSE, msgId, {
 			s: opened.id,
@@ -250,7 +253,11 @@ async function handleCombatRoll(
 		? { wave: body.roll.w, roll: body.roll.r, dmg: body.roll.d, sig: body.roll.sig }
 		: undefined;
 
-	const session = await applyRoll(sessionRow.id, inRoll, attestPubkey ?? undefined);
+	const stats = await getLoadoutStats(sessionRow.operativeId);
+	const session = await applyRoll(sessionRow.id, inRoll, attestPubkey ?? undefined, {
+		attack: stats.attack,
+		defense: stats.defense
+	});
 	if (session.status !== 'active') {
 		await submitChallenge(
 			sessionRow.operativeId,

@@ -77,6 +77,8 @@ ALTER TABLE game_state ADD COLUMN IF NOT EXISTS level INTEGER NOT NULL DEFAULT 1
 -- on read, 30 min later energy refills to full in one shot, then it is cleared.
 ALTER TABLE game_state ADD COLUMN IF NOT EXISTS energy              INTEGER NOT NULL DEFAULT 7;
 ALTER TABLE game_state ADD COLUMN IF NOT EXISTS energy_exhausted_at TIMESTAMPTZ;
+-- B3: equipped loadout — { weapon|head|body|trinket -> catalogId }.
+ALTER TABLE game_state ADD COLUMN IF NOT EXISTS loadout JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- inventory: items, credentials, and prompt-fragments an operative owns.

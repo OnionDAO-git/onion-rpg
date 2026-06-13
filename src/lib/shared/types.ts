@@ -38,6 +38,31 @@ export interface Operative {
 
 export type InventoryKind = 'item' | 'credential' | 'prompt_fragment';
 
+// ── Gear (Part B / B3) ─────────────────────────────────────────────────────
+
+/** Equipment slots. One equipped item per slot makes up the loadout. */
+export type GearSlot = 'weapon' | 'head' | 'body' | 'trinket';
+
+/** Rarity ladder — drives chest loot weights and forge tiers. */
+export type Rarity = 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+
+/** Combat stats contributed by equipped gear (all optional, summed). */
+export interface GearStats {
+	/** Added to player damage per roll. */
+	attack?: number;
+	/** Subtracted from incoming enemy damage (min 1 still lands). */
+	defense?: number;
+	/** Added to max operative HP at combat open. */
+	hp?: number;
+}
+
+/** One weighted entry in a chest's loot table. */
+export interface LootEntry {
+	catalogId: string;
+	/** Relative weight in the rarity-weighted roll. */
+	weight: number;
+}
+
 /** How an inventory row is backed. On-chain seam — 'db' today. */
 export type InventoryBacking = 'db' | 'spl_token' | 'nft';
 
@@ -61,6 +86,15 @@ export interface InventoryItem {
 	description: string;
 	/** Default backing when granted; overridable per-grant. */
 	backing?: InventoryBacking;
+	// ── Gear (B3, optional) — present makes this item equippable. ──
+	/** Equip slot; required for the item to be equippable. */
+	slot?: GearSlot;
+	rarity?: Rarity;
+	/** Combat stats summed into the loadout when equipped. */
+	stats?: GearStats;
+	// ── Chest (B3, optional) — present makes this item openable. ──
+	/** Opening consumes one and rolls this rarity-weighted loot table. */
+	chest?: { table: LootEntry[] };
 }
 
 /** A gating credential (e.g. Grid Credential, City IT Keycard). */
