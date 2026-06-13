@@ -42,6 +42,7 @@ import { getChallenge } from '$lib/server/challenges/registry';
 import { applyRoll, openCombat } from '$lib/server/engine/combat';
 import { getEnergy, MAX_ENERGY } from '$lib/server/engine/energy';
 import { getLoadoutStats } from '$lib/server/engine/gear';
+import { getStory } from '$lib/server/engine/director';
 import { listInventory } from '$lib/server/engine/inventory';
 import { sql } from '$lib/server/db/index';
 import { handleBadgeMove } from '$lib/server/badge/runtime';
@@ -143,6 +144,7 @@ async function handleIdentify(
 	const op = await resolveOperative(body.h, body.o);
 	const gs = await getGameState(op.id);
 	const en = await getEnergy(op.id);
+	const story = await getStory(op.id);
 	const inventory = await listInventory(op.id);
 	return encodeResponse(MsgType.IDENTIFY_ACK, msgId, {
 		id: op.id,
@@ -154,6 +156,7 @@ async function handleIdentify(
 		level: gs?.level ?? 1,
 		energy: en?.energy ?? MAX_ENERGY,
 		energyMax: MAX_ENERGY,
+		story: { arc: story.arcId, name: story.arcName, seg: story.segment, total: story.totalSegments },
 		challengeStatus: gs?.challengeStatus ?? {},
 		flags: gs?.flags ?? {},
 		inventory: inventory.map((i) => ({ id: i.catalogId, k: i.kind, q: i.qty }))

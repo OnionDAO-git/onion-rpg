@@ -79,6 +79,9 @@ ALTER TABLE game_state ADD COLUMN IF NOT EXISTS energy              INTEGER NOT 
 ALTER TABLE game_state ADD COLUMN IF NOT EXISTS energy_exhausted_at TIMESTAMPTZ;
 -- B3: equipped loadout — { weapon|head|body|trinket -> catalogId }.
 ALTER TABLE game_state ADD COLUMN IF NOT EXISTS loadout JSONB NOT NULL DEFAULT '{}'::jsonb;
+-- B5: storyline director — assigned arc + current segment index.
+ALTER TABLE game_state ADD COLUMN IF NOT EXISTS arc_id      TEXT;
+ALTER TABLE game_state ADD COLUMN IF NOT EXISTS arc_segment INTEGER NOT NULL DEFAULT 0;
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- inventory: items, credentials, and prompt-fragments an operative owns.

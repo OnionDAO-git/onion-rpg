@@ -84,7 +84,7 @@ function buildSql() {
     // game_state
     if (n.includes('insert into game_state') && n.includes('on conflict')) {
       const id = values[0] as string;
-      if (!_db.game_state.has(id)) _db.game_state.set(id, { operativeId: id, currentAct: 0, challengeStatus: {}, hp: 100, flags: {}, xp: 0, level: 1, energy: 7, energyExhaustedAt: null, loadout: {}, updatedAt: new Date().toISOString() }); return [];
+      if (!_db.game_state.has(id)) _db.game_state.set(id, { operativeId: id, currentAct: 0, challengeStatus: {}, hp: 100, flags: {}, xp: 0, level: 1, energy: 7, energyExhaustedAt: null, loadout: {}, arcId: null, arcSegment: 0, updatedAt: new Date().toISOString() }); return [];
     }
     // Both the full select (with hp/flags) and the act-only select (maybeAdvanceAct)
     if (n.includes('select current_act') && n.includes('game_state') && n.includes('operative_id')) {
@@ -126,6 +126,21 @@ function buildSql() {
     if (n.includes('update game_state set loadout')) {
       const gs = _db.game_state.get(values[1] as string);
       if (gs) { gs.loadout = (values[0] as any) ?? {}; gs.updatedAt = new Date().toISOString(); }
+      return [];
+    }
+    // director / arc (B5) — check arc_id (ensureArc, sets both) BEFORE arc_segment.
+    if (n.includes('select arc_id, arc_segment from game_state')) {
+      const gs = _db.game_state.get(values[0] as string);
+      return gs ? [{ arcId: gs.arcId ?? null, arcSegment: gs.arcSegment ?? 0 }] : [];
+    }
+    if (n.includes('update game_state set arc_id')) {
+      const gs = _db.game_state.get(values[1] as string);
+      if (gs) { gs.arcId = values[0] as string; gs.arcSegment = 0; gs.updatedAt = new Date().toISOString(); }
+      return [];
+    }
+    if (n.includes('update game_state set arc_segment')) {
+      const gs = _db.game_state.get(values[1] as string);
+      if (gs) { gs.arcSegment = values[0] as number; gs.updatedAt = new Date().toISOString(); }
       return [];
     }
 
@@ -333,6 +348,7 @@ let getEnergy: any, spendEnergy: any, skipEnergyWithOnions: any, ENERGY_SKIP_COS
 let equip: any, getLoadout: any, getLoadoutStats: any, openChest: any, forge: any, weightedPick: any;
 let getColonyLevel: any, getColonyStatus: any, colonyLevelAtLeast: any, contributeCores: any,
     COLONY_CONTRIBUTORS_PER_LEVEL: any, CORES_REQUIRED_PER_CONTRIBUTION: any;
+let ensureArc: any, getStory: any, advanceStory: any, ARC_IDS: any;
 let getChallenge: any;
 let encodeMessage: any, decodeFrame: any, Reassembler: any, MsgType: any;
 let SimChannel: any, VirtualBadge: any;
@@ -351,6 +367,8 @@ beforeAll(async () => {
   ({ getColonyLevel, getColonyStatus, colonyLevelAtLeast, contributeCores,
      COLONY_CONTRIBUTORS_PER_LEVEL, CORES_REQUIRED_PER_CONTRIBUTION } =
     await import(`${ROOT}/src/lib/server/engine/colony`));
+  ({ ensureArc, getStory, advanceStory, ARC_IDS } =
+    await import(`${ROOT}/src/lib/server/engine/director`));
   ({ getChallenge } = await import(`${ROOT}/src/lib/server/challenges/registry`));
 
   // Load challenge impls — each calls registerChallenge() as a side effect
@@ -1081,5 +1099,56 @@ describe('The Colony — collective layer (B4)', () => {
     for (const op of ops) {
       expect(await listCatalogIds(op.id)).toContain('colony_chest');
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUITE 10 — The Director / storylines (B5)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Director — storylines (B5)', () => {
+  beforeEach(() => { resetDb(); clearMockRewards(); });
+
+  it('assigns one of the arc pool at segment 0 on first read', async () => {
+    const op = await resolveOperative('hw-dir-1');
+    const s = await getStory(op.id);
+    expect(ARC_IDS).toContain(s.arcId);
+    expect(s.segment).toBe(0);
+    expect(s.segmentChallenges.length).toBeGreaterThan(0);
+  });
+
+  it('arc assignment is stable across reads', async () => {
+    const op = await resolveOperative('hw-dir-stable');
+    const a = await getStory(op.id);
+    const b = await getStory(op.id);
+    expect(b.arcId).toBe(a.arcId);
+  });
+
+  it('advances a segment when cleared AND colony gate met', async () => {
+    const op = await resolveOperative('hw-dir-adv');
+    _db.game_state.get(op.id)!.arcId = 'deepdish_uprising'; // seg0 [0.1] L0, seg1 [mg-bankbust] L1
+    _db.colony.level = 1;
+    const r = await advanceStory(op.id, '0.1', { '0.1': 'cleared' });
+    expect(r.advanced).toBe(true);
+    expect(r.segment).toBe(1);
+    expect((await getStory(op.id)).segment).toBe(1);
+  });
+
+  it('blocks advance when the colony gate is not met', async () => {
+    const op = await resolveOperative('hw-dir-block');
+    _db.game_state.get(op.id)!.arcId = 'deepdish_uprising';
+    _db.colony.level = 0; // seg1 needs L1
+    const r = await advanceStory(op.id, '0.1', { '0.1': 'cleared' });
+    expect(r.advanced).toBe(false);
+    expect(r.blockedByColony).toBe(true);
+    expect((await getStory(op.id)).segment).toBe(0);
+  });
+
+  it('no-op when the cleared challenge is not in the current segment', async () => {
+    const op = await resolveOperative('hw-dir-noop');
+    _db.game_state.get(op.id)!.arcId = 'the_long_climb'; // seg0 [mg-bankbust]
+    _db.colony.level = 5;
+    const r = await advanceStory(op.id, '0.1', { '0.1': 'cleared' });
+    expect(r.advanced).toBe(false);
   });
 });

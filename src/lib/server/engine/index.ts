@@ -15,6 +15,7 @@ import { getChallenge, challengesForAct } from '../challenges/registry';
 import { grantItem, listCatalogIds, hasAll } from './inventory';
 import { findSession } from './combat';
 import { spendEnergy, MAX_ENERGY } from './energy';
+import { advanceStory } from './director';
 import { createRequest } from '../onion/client';
 import type {
 	Operative,
@@ -460,7 +461,13 @@ export async function submitChallenge(
 		`;
 
 		// Advance act if all challenges in the current act are cleared.
+		// (Legacy progression for the original Chicago content; retired in B8.)
 		await maybeAdvanceAct(operativeId, challenge.act);
+
+		// B5: advance the player's storyline arc if this clears their current
+		// segment and the Colony gate for the next segment is met.
+		const gs = await getGameState(operativeId);
+		if (gs) await advanceStory(operativeId, challengeId, gs.challengeStatus);
 	}
 
 	return result;
