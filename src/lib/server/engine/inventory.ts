@@ -87,6 +87,27 @@ export async function consumeItem(
 	return true;
 }
 
+/**
+ * Transfer `qty` of an item (or Cores) from one operative to another (B7 —
+ * basic trade plumbing, no escrow/confirmation). Consumes from the sender then
+ * grants to the recipient. Throws if the sender is short (no partial transfer).
+ */
+export async function transferItem(
+	fromOperativeId: string,
+	toOperativeId: string,
+	catalogId: string,
+	qty = 1
+): Promise<{ catalogId: string; qty: number; from: string; to: string }> {
+	if (fromOperativeId === toOperativeId) throw new Error('cannot trade with yourself');
+	if (qty <= 0) throw new Error('qty must be positive');
+	if (!catalogEntry(catalogId)) throw new Error(`unknown catalogId: ${catalogId}`);
+
+	const taken = await consumeItem(fromOperativeId, catalogId, qty);
+	if (!taken) throw new Error(`sender does not hold ${qty}x ${catalogId}`);
+	await grantItem(toOperativeId, catalogId, { qty });
+	return { catalogId, qty, from: fromOperativeId, to: toOperativeId };
+}
+
 /** All catalogIds an operative currently holds. */
 export async function listCatalogIds(operativeId: string): Promise<string[]> {
 	const rows = await sql<{ catalogId: string }[]>`

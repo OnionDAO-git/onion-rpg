@@ -362,6 +362,7 @@ let ensureArc: any, getStory: any, advanceStory: any, ARC_IDS: any;
 let bossWindowState: any, availableBosses: any, startBoss: any, resolveBossRoll: any,
     buyPotion: any, revive: any, getPlayerHp: any, BOSSES: any,
     MAX_HP: any, POTION_COST: any, REVIVE_COST: any, BOSS_WINDOW_DURATION_MS: any;
+let listStore: any, buyFromStore: any, STORE: any, transferItem: any;
 let getChallenge: any;
 let encodeMessage: any, decodeFrame: any, Reassembler: any, MsgType: any;
 let SimChannel: any, VirtualBadge: any;
@@ -385,6 +386,8 @@ beforeAll(async () => {
   ({ bossWindowState, availableBosses, startBoss, resolveBossRoll, buyPotion, revive,
      getPlayerHp, BOSSES, MAX_HP, POTION_COST, REVIVE_COST, BOSS_WINDOW_DURATION_MS } =
     await import(`${ROOT}/src/lib/server/engine/boss`));
+  ({ listStore, buyFromStore, STORE } = await import(`${ROOT}/src/lib/server/engine/store`));
+  ({ transferItem } = await import(`${ROOT}/src/lib/server/engine/inventory`));
   ({ getChallenge } = await import(`${ROOT}/src/lib/server/challenges/registry`));
 
   // Load challenge impls — each calls registerChallenge() as a side effect
@@ -1235,5 +1238,58 @@ describe('Bosses — timed events (B6)', () => {
     const hpR = await revive(op.id, `${op.id}:revive:1`);
     expect(hpR).toBe(MAX_HP);
     expect(getMockRewards().filter((r: any) => r.externalId === `${op.id}:revive:1`)[0].amount).toBe(REVIVE_COST);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUITE 12 — Store + trade (B7)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Store + trade (B7)', () => {
+  beforeEach(() => { resetDb(); clearMockRewards(); });
+
+  it('store offers are gated by colony level', async () => {
+    _db.colony.level = 0;
+    let ids = (await listStore()).map((o: any) => o.id);
+    expect(ids).toContain('buy_rusty_shiv');
+    expect(ids).not.toContain('buy_forged_blade'); // requires L1
+    _db.colony.level = 1;
+    ids = (await listStore()).map((o: any) => o.id);
+    expect(ids).toContain('buy_forged_blade');
+  });
+
+  it('buying charges onions and grants the item', async () => {
+    const op = await resolveOperative('hw-store-buy');
+    _db.operatives.get(op.id)!.username = 'shopper';
+    _db.colony.level = 0;
+    const r = await buyFromStore(op.id, 'buy_scrap_chest', `${op.id}:buy:1`);
+    expect(r.granted).toBe('scrap_chest');
+    expect(await listCatalogIds(op.id)).toContain('scrap_chest');
+    const burns = getMockRewards().filter((b: any) => b.externalId === `${op.id}:buy:1`);
+    expect(burns[0].amount).toBe(STORE.buy_scrap_chest.priceOnions);
+  });
+
+  it('buying a colony-locked offer is rejected', async () => {
+    const op = await resolveOperative('hw-store-locked');
+    _db.colony.level = 0;
+    await expect(buyFromStore(op.id, 'buy_forged_blade', `${op.id}:buy:x`)).rejects.toThrow(/locked/i);
+  });
+
+  it('transfer moves Cores from sender to recipient', async () => {
+    const a = await resolveOperative('hw-trade-a');
+    const b = await resolveOperative('hw-trade-b');
+    await grantItem(a.id, 'cores', { qty: 5 });
+    const r = await transferItem(a.id, b.id, 'cores', 3);
+    expect(r.qty).toBe(3);
+    expect(_db.inventory.get(`${a.id}:cores`).qty).toBe(2);
+    expect(_db.inventory.get(`${b.id}:cores`).qty).toBe(3);
+  });
+
+  it('transfer rejects insufficient balance and self-trade', async () => {
+    const a = await resolveOperative('hw-trade-poor');
+    const b = await resolveOperative('hw-trade-other');
+    await grantItem(a.id, 'cores', { qty: 1 });
+    await expect(transferItem(a.id, b.id, 'cores', 3)).rejects.toThrow(/does not hold/i);
+    await expect(transferItem(a.id, a.id, 'cores', 1)).rejects.toThrow(/yourself/i);
   });
 });
