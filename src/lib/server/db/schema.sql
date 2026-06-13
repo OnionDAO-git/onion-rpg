@@ -68,6 +68,12 @@ CREATE TABLE IF NOT EXISTS game_state (
 	updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Part B additive player progression. ALTER ... IF NOT EXISTS keeps this file
+-- idempotent and re-appliable (additive-only rule).
+-- B1: experience points + derived level (level = 1 + floor(xp / 100)).
+ALTER TABLE game_state ADD COLUMN IF NOT EXISTS xp    INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE game_state ADD COLUMN IF NOT EXISTS level INTEGER NOT NULL DEFAULT 1;
+
 -- ─────────────────────────────────────────────────────────────────────────
 -- inventory: items, credentials, and prompt-fragments an operative owns.
 -- The on-chain seam: `backing` + `backing_ref` let us later point a row at an

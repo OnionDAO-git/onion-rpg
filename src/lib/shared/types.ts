@@ -105,7 +105,13 @@ export interface GaugeReward {
 	amount: number;
 }
 
-export type RewardSpec = OnionReward | ItemReward | GaugeReward;
+/** Experience points granted to the operative (Part B player progression). */
+export interface XpReward {
+	kind: 'xp';
+	amount: number;
+}
+
+export type RewardSpec = OnionReward | ItemReward | GaugeReward | XpReward;
 
 // ── Combat ────────────────────────────────────────────────────────────────
 

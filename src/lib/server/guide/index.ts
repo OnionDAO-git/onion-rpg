@@ -39,6 +39,8 @@ function rewardLabel(r: RewardSpec): GuideReward {
 			const name = entry?.name ?? r.catalogId;
 			return { label: r.qty && r.qty > 1 ? `${name} ×${r.qty}` : name };
 		}
+		case 'xp':
+			return { label: `+${r.amount} XP` };
 	}
 }
 

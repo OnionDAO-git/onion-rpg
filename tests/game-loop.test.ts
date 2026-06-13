@@ -82,7 +82,7 @@ function buildSql() {
     // game_state
     if (n.includes('insert into game_state') && n.includes('on conflict')) {
       const id = values[0] as string;
-      if (!_db.game_state.has(id)) _db.game_state.set(id, { operativeId: id, currentAct: 0, challengeStatus: {}, hp: 100, flags: {}, updatedAt: new Date().toISOString() }); return [];
+      if (!_db.game_state.has(id)) _db.game_state.set(id, { operativeId: id, currentAct: 0, challengeStatus: {}, hp: 100, flags: {}, xp: 0, level: 1, updatedAt: new Date().toISOString() }); return [];
     }
     // Both the full select (with hp/flags) and the act-only select (maybeAdvanceAct)
     if (n.includes('select current_act') && n.includes('game_state') && n.includes('operative_id')) {
@@ -100,6 +100,10 @@ function buildSql() {
     }
     if (n.includes('update game_state set') && n.includes('flags')) {
       const gs = _db.game_state.get(values[1] as string); if (gs) { gs.flags = { ...gs.flags, ...(values[0] as any) }; gs.updatedAt = new Date().toISOString(); } return [];
+    }
+    if (n.includes('update game_state set') && n.includes('xp =')) {
+      const id = values[values.length - 1] as string; const amount = values[0] as number; const gs = _db.game_state.get(id);
+      if (gs) { gs.xp = (gs.xp ?? 0) + amount; gs.level = Math.max(1, 1 + Math.floor(gs.xp / 100)); gs.updatedAt = new Date().toISOString(); } return [];
     }
 
     // inventory
@@ -781,6 +785,19 @@ describe('Reward ledger idempotency', () => {
     // Exactly one burn request fired, one ledger row written.
     expect(getMockRewards().filter((r: any) => r.externalId === extId).length).toBe(1);
     expect(_db.onion_rewards.get(extId)?.requestType).toBe('burn');
+  });
+
+  it('xp reward grants xp and bumps derived level (B1)', async () => {
+    const op = await resolveOperative('hw-xp');
+    await applyRewards(op.id, 'mg-bankbust', 'a1', [{ kind: 'xp', amount: 150 }]);
+    const gs = await getGameState(op.id);
+    expect(gs.xp).toBe(150);
+    expect(gs.level).toBe(2); // 1 + floor(150/100)
+    // Accumulates across grants.
+    await applyRewards(op.id, 'mg-bankbust', 'a2', [{ kind: 'xp', amount: 60 }]);
+    const gs2 = await getGameState(op.id);
+    expect(gs2.xp).toBe(210);
+    expect(gs2.level).toBe(3); // 1 + floor(210/100)
   });
 
   it('inventory grant is idempotent for credentials', async () => {

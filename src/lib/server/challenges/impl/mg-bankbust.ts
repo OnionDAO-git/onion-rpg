@@ -102,7 +102,10 @@ const challenge: ChallengeDescriptor = {
 	type: 'merchant',
 	name: 'Bank or Bust',
 	requires: [],
-	rewards: [{ kind: 'inventory', catalogId: 'bankbust_chip' }],
+	rewards: [
+		{ kind: 'inventory', catalogId: 'bankbust_chip' },
+		{ kind: 'xp', amount: 20 }
+	],
 	beaconConfig: { beaconIdHint: 'b-bankbust', landmark: 'Back-alley pip table' },
 	content: {
 		intro: "DEEPDISH's rigged little dice table. Push to draw a pip, bank to walk. Don't get greedy.",

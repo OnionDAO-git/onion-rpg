@@ -158,8 +158,36 @@ export async function applyRewards(
 	for (const reward of rewards) {
 		if (reward.kind === 'inventory') {
 			await grantItem(operativeId, reward.catalogId, { qty: reward.qty });
+		} else if (reward.kind === 'xp') {
+			await grantXp(operativeId, reward.amount);
 		}
 	}
+}
+
+// ── Player progression (Part B / B1) ───────────────────────────────────────
+
+/** XP needed per level; level = 1 + floor(xp / XP_PER_LEVEL). */
+export const XP_PER_LEVEL = 100;
+
+/** Pure helper: derive level from total xp. */
+export function levelForXp(xp: number): number {
+	return 1 + Math.floor(Math.max(0, xp) / XP_PER_LEVEL);
+}
+
+/**
+ * Add experience to an operative and recompute their derived level in the same
+ * UPDATE (RHS references read the pre-update xp). Additive and safe to call
+ * repeatedly; the engine is the only writer of xp/level.
+ */
+export async function grantXp(operativeId: string, amount: number): Promise<void> {
+	if (!Number.isFinite(amount) || amount === 0) return;
+	await sql`
+		UPDATE game_state SET
+			xp    = xp + ${amount},
+			level = GREATEST(1, 1 + (xp + ${amount}) / ${XP_PER_LEVEL}),
+			updated_at = now()
+		WHERE operative_id = ${operativeId}
+	`;
 }
 
 /**
@@ -468,20 +496,24 @@ async function maybeAdvanceAct(operativeId: string, act: number): Promise<void> 
 
 // ── State queries ──────────────────────────────────────────────────────────
 
-/** Full game-state for an operative (act, challenge_status, hp, flags). */
+/** Full game-state for an operative (act, challenge_status, hp, flags, xp, level). */
 export async function getGameState(operativeId: string): Promise<{
 	currentAct: number;
 	challengeStatus: Record<string, string>;
 	hp: number;
 	flags: Record<string, unknown>;
+	xp: number;
+	level: number;
 } | null> {
 	const [row] = await sql<{
 		currentAct: number;
 		challengeStatus: Record<string, string>;
 		hp: number;
 		flags: Record<string, unknown>;
+		xp: number;
+		level: number;
 	}[]>`
-		SELECT current_act, challenge_status, hp, flags
+		SELECT current_act, challenge_status, hp, flags, xp, level
 		FROM game_state WHERE operative_id = ${operativeId}
 	`;
 	return row ?? null;

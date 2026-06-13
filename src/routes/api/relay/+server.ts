@@ -147,6 +147,8 @@ async function handleIdentify(
 		callsign: op.callsign,
 		act: gs?.currentAct ?? 0,
 		hp: gs?.hp ?? 100,
+		xp: gs?.xp ?? 0,
+		level: gs?.level ?? 1,
 		challengeStatus: gs?.challengeStatus ?? {},
 		flags: gs?.flags ?? {},
 		inventory: inventory.map((i) => ({ id: i.catalogId, k: i.kind, q: i.qty }))
