@@ -161,9 +161,12 @@ function buildSql() {
       const r = _db.onion_rewards.get(values[0] as string); return r ? [{ id: r.id, status: r.status, onionRequestId: r.onionRequestId ?? null }] : [];
     }
     if (n.includes('insert into onion_rewards')) {
-      const [opId, cid, rt, amount, extId] = values as [string, string, string, number, string];
+      // request_type is an inline SQL literal ('burn'/'transfer'), so it is NOT
+      // an interpolated value: values = [operativeId, challengeId, amount, externalId].
+      const [opId, cid, amount, extId] = values as [string, string | null, number, string];
+      const rt = n.includes("'burn'") ? 'burn' : 'transfer';
       if (_db.onion_rewards.has(extId)) return [];
-      const row = { id: randomUUID(), operativeId: opId, challengeId: cid, requestType: rt, amount, externalId: extId, onionRequestId: null, status: 'pending', error: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      const row = { id: randomUUID(), operativeId: opId, challengeId: cid ?? null, requestType: rt, amount, externalId: extId, onionRequestId: null, status: 'pending', error: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
       _db.onion_rewards.set(extId, row); return [{ id: row.id }];
     }
     if (n.includes('update onion_rewards set') && n.includes('onion_request_id')) {
@@ -257,7 +260,7 @@ mock.module(`${ROOT}/src/lib/server/ai/stt`, () => ({
 // ═══════════════════════════════════════════════════════════════════════════
 
 let resolveOperative: any, beginChallenge: any, submitChallenge: any,
-    canBegin: any, getGameState: any, applyRewards: any;
+    canBegin: any, getGameState: any, applyRewards: any, chargeOnions: any;
 let openCombat: any, applyRoll: any;
 let grantItem: any, listCatalogIds: any;
 let getGauge: any;
@@ -267,7 +270,7 @@ let SimChannel: any, VirtualBadge: any;
 
 beforeAll(async () => {
   // Engine modules (use relative imports internally; mocked by absolute paths above)
-  ({ resolveOperative, beginChallenge, submitChallenge, canBegin, getGameState, applyRewards } =
+  ({ resolveOperative, beginChallenge, submitChallenge, canBegin, getGameState, applyRewards, chargeOnions } =
     await import(`${ROOT}/src/lib/server/engine/index`));
   ({ openCombat, applyRoll } = await import(`${ROOT}/src/lib/server/engine/combat`));
   ({ grantItem, listCatalogIds } = await import(`${ROOT}/src/lib/server/engine/inventory`));
@@ -442,9 +445,9 @@ describe('Act 0 — Ketchup Gauntlet (registration + combat)', () => {
     expect((content as any).intro).toBeTruthy();
   });
 
-  it('combat: open → first roll → won → rewards + operative registered + gauge bumped', async () => {
+  it('combat: open → first roll → won → inventory granted + operative registered, zero onion awards (economy flip)', async () => {
     const op = await resolveOperative('hw-combat');
-    // Give the operative a username so the Onion reward path fires (not skipped)
+    // Even with a linked username, the economy flip means NO onion award fires.
     _db.operatives.get(op.id)!.username = 'test-operative';
     const { attemptId } = await beginChallenge(op.id, '0.1');
     // enemyHp=1 → first roll wins
@@ -456,12 +459,11 @@ describe('Act 0 — Ketchup Gauntlet (registration + combat)', () => {
     expect(result.passed).toBe(true);
     // Inventory: encased_meat_mk1
     expect(await listCatalogIds(op.id)).toContain('encased_meat_mk1');
-    // Onion reward: 50 queued (not real API)
-    expect(getMockRewards().some((r: any) => r.amount === 50)).toBe(true);
     // Operative marked registered on first win
     expect(_db.operatives.get(op.id)?.registered).toBe(true);
-    // Gauge bumped ≥ 500
-    expect(_db.gauge.current).toBeGreaterThanOrEqual(500);
+    // Economy flip: the retired onions/gauge reward branches fire nothing.
+    expect(getMockRewards().length).toBe(0);
+    expect(_db.gauge.current).toBe(0);
   });
 
   it('combat lost (op hp→0) returns passed=false', async () => {
@@ -546,7 +548,7 @@ describe('Act 1.1 — Malört Fountains (voice/STT)', () => {
     const result = await submitChallenge(op.id, '1.1', { t: 'intake crib tunnel jardine grid' }, attemptId);
     expect(result.passed).toBe(true);
     expect(await listCatalogIds(op.id)).toContain('water_main_key');
-    expect(getMockRewards().some((r: any) => r.amount === 80)).toBe(true);
+    expect(getMockRewards().length).toBe(0); // economy flip: no onion award
   });
 
   it('fails with completely wrong transcript', async () => {
@@ -624,7 +626,7 @@ describe('Act 1.3 — River Ran Backwards (NPC/AI)', () => {
     const result = await submitChallenge(op.id, '1.3', { t: 'Chicago reversed the river in 1900 to stop sewage contaminating Lake Michigan' }, attemptId);
     expect(result.passed).toBe(true);
     expect(await listCatalogIds(op.id)).toContain('reversal_map');
-    expect(getMockRewards().some((r: any) => r.amount === 70)).toBe(true);
+    expect(getMockRewards().length).toBe(0); // economy flip: no onion award
   });
 
   it('continues when mocked Claude returns passed=false', async () => {
@@ -726,7 +728,7 @@ describe('Act 4 progression gating', () => {
     expect(result.passed).toBe(false);
   });
 
-  it('full Act 4 combat: begin + open + roll → win → prompt_console_access + 200 Onions', async () => {
+  it('full Act 4 combat: begin + open + roll → win → prompt_console_access, zero onion awards (economy flip)', async () => {
     const op = await resolveOperative('hw-a4-full');
     _db.operatives.get(op.id)!.username = 'test-act4-player';
     await grantItem(op.id, 'grid_credential');
@@ -738,7 +740,7 @@ describe('Act 4 progression gating', () => {
     const result = await submitChallenge(op.id, '4.1', {}, attemptId);
     expect(result.passed).toBe(true);
     expect(await listCatalogIds(op.id)).toContain('prompt_console_access');
-    expect(getMockRewards().some((r: any) => r.amount === 200)).toBe(true);
+    expect(getMockRewards().length).toBe(0); // economy flip: no onion award
   });
 
   it('relay CHALLENGE_BEGIN → GATED error without credentials', async () => {
@@ -760,20 +762,25 @@ describe('Act 4 progression gating', () => {
 describe('Reward ledger idempotency', () => {
   beforeEach(() => { resetDb(); clearMockRewards(); });
 
-  it('gauge bumps accumulate across calls', async () => {
-    const op = await resolveOperative('hw-gauge');
+  it('economy flip: onions/gauge reward kinds are inert no-ops', async () => {
+    const op = await resolveOperative('hw-flip');
+    _db.operatives.get(op.id)!.username = 'test-player';
     await applyRewards(op.id, '0.1', 'a1', [{ kind: 'gauge', amount: 500 }]);
-    await applyRewards(op.id, '0.1', 'a2', [{ kind: 'gauge', amount: 300 }]);
-    expect(_db.gauge.current).toBe(800);
+    await applyRewards(op.id, '0.1', 'a2', [{ kind: 'onions', amount: 50 }]);
+    // No gauge bump, no Onion DAO request — onions only flow the other way now.
+    expect(_db.gauge.current).toBe(0);
+    expect(getMockRewards().length).toBe(0);
   });
 
-  it('same externalId onion reward is not doubled', async () => {
-    const op = await resolveOperative('hw-idem-reward');
-    _db.operatives.get(op.id)!.username = 'test-player';
-    await applyRewards(op.id, '0.1', 'atm-same', [{ kind: 'onions', amount: 50 }]);
-    await applyRewards(op.id, '0.1', 'atm-same', [{ kind: 'onions', amount: 50 }]);
-    const extId = `${op.id}:0.1:atm-same:onions:50`;
+  it('chargeOnions burns once per externalId (idempotent)', async () => {
+    const op = await resolveOperative('hw-charge');
+    _db.operatives.get(op.id)!.username = 'test-payer';
+    const extId = `${op.id}:store:gear_chest:1`;
+    await chargeOnions(op.id, 25, 'store:gear_chest', extId);
+    await chargeOnions(op.id, 25, 'store:gear_chest', extId);
+    // Exactly one burn request fired, one ledger row written.
     expect(getMockRewards().filter((r: any) => r.externalId === extId).length).toBe(1);
+    expect(_db.onion_rewards.get(extId)?.requestType).toBe('burn');
   });
 
   it('inventory grant is idempotent for credentials', async () => {

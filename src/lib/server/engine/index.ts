@@ -6,16 +6,14 @@
  *   - Resolve/upsert operatives from badge identity.
  *   - Build the ChallengeContext for validate() calls.
  *   - Gate challenge begin on `requires` credential list.
- *   - Persist challenge_attempts and apply rewards on pass.
- *   - Queue onion_rewards (Onion DAO async requests).
- *   - Bump the shared festival gauge.
+ *   - Persist challenge_attempts and apply (inventory) rewards on pass.
+ *   - Charge (burn) Onions FROM players via chargeOnions() — economy flip.
  *   - Manage game_state (current_act, challenge_status, flags).
  */
 import { sql } from '../db/index';
 import { getChallenge, challengesForAct } from '../challenges/registry';
 import { grantItem, listCatalogIds, hasAll } from './inventory';
 import { findSession } from './combat';
-import { bumpGauge } from '../onion/gauge';
 import { createRequest } from '../onion/client';
 import type {
 	Operative,
@@ -138,12 +136,15 @@ export async function canBegin(operativeId: string, challengeId: string): Promis
 // ── Reward application ─────────────────────────────────────────────────────
 
 /**
- * Apply a list of RewardSpec entries for a completed challenge. Idempotent per
- * externalId; safe to call multiple times (e.g. on retry).
+ * Apply a list of RewardSpec entries for a completed challenge.
  *
- * - inventory → grantItem()
- * - gauge     → bumpGauge()
- * - onions    → insert onion_rewards row + fire Onion DAO API request
+ * ECONOMY FLIP (S1): this fork grants INVENTORY only. The legacy 'onions'
+ * (player reward) and 'gauge' branches are intentionally retired —
+ *   - Onions now flow the OTHER way (player → dev) via chargeOnions().
+ *   - The supply gauge is repurposed as the Colony meter (Part B).
+ * The RewardSpec union and queueOnionReward() are kept intact for reference and
+ * are simply no longer invoked, so any challenge still declaring an 'onions' or
+ * 'gauge' reward is now a harmless no-op rather than an onion-award request.
  */
 export async function applyRewards(
 	operativeId: string,
@@ -151,16 +152,88 @@ export async function applyRewards(
 	attemptId: string,
 	rewards: RewardSpec[]
 ): Promise<void> {
+	// challengeId/attemptId were only used to build the retired onion externalId.
+	void challengeId;
+	void attemptId;
 	for (const reward of rewards) {
 		if (reward.kind === 'inventory') {
 			await grantItem(operativeId, reward.catalogId, { qty: reward.qty });
-		} else if (reward.kind === 'gauge') {
-			await bumpGauge(reward.amount);
-		} else if (reward.kind === 'onions') {
-			// Build a stable externalId so duplicate calls are safe.
-			const externalId = `${operativeId}:${challengeId}:${attemptId}:onions:${reward.amount}`;
-			await queueOnionReward(operativeId, challengeId, reward.amount, externalId);
 		}
+	}
+}
+
+/**
+ * Charge (burn) Onions FROM a player to the dev/treasury — the economy-flip
+ * inverse of the retired reward path. Used by the store and other player-pays
+ * sinks (Part B). Idempotent on `externalId`: a duplicate call is a no-op and
+ * never fires a second Onion DAO request. Writes a 'burn' row to the existing
+ * onion_rewards ledger.
+ *
+ *   chargeOnions(opId, 25, 'store:gear_chest', `${opId}:store:gear_chest:1`)
+ */
+export async function chargeOnions(
+	operativeId: string,
+	amount: number,
+	reason: string,
+	externalId: string
+): Promise<void> {
+	// Idempotency: if we already recorded this externalId, the burn is in flight
+	// or settled — do nothing.
+	const [existing] = await sql<{ id: string; status: string; onionRequestId: string | null }[]>`
+		SELECT id, status, onion_request_id FROM onion_rewards WHERE external_id = ${externalId}
+	`;
+	if (existing) return;
+
+	// The player is the payer; we need their linked Onion username to burn from.
+	const [op] = await sql<{ username: string | null }[]>`
+		SELECT username FROM operatives WHERE id = ${operativeId}
+	`;
+	const username = op?.username;
+
+	// Record the ledger row first so we have a trace even if the API call fails.
+	const [ledgerRow] = await sql<{ id: string }[]>`
+		INSERT INTO onion_rewards
+			(operative_id, challenge_id, request_type, amount, external_id)
+		VALUES
+			(${operativeId}, ${null}, 'burn', ${amount}, ${externalId})
+		ON CONFLICT (external_id) DO NOTHING
+		RETURNING id
+	`;
+	if (!ledgerRow) return; // lost race, skip
+
+	if (!username) {
+		await sql`
+			UPDATE onion_rewards
+			SET status = 'failed', error = 'operative has no linked username',
+			    updated_at = now()
+			WHERE id = ${ledgerRow.id}
+		`;
+		return;
+	}
+
+	try {
+		const { id: onionRequestId, status } = await createRequest({
+			type: 'burn',
+			username, // the player burns from their own balance
+			amount,
+			externalId,
+			note: `ONION RPG charge — ${reason}`
+		});
+
+		await sql`
+			UPDATE onion_rewards
+			SET onion_request_id = ${onionRequestId},
+			    status           = ${status},
+			    updated_at       = now()
+			WHERE id = ${ledgerRow.id}
+		`;
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		await sql`
+			UPDATE onion_rewards
+			SET status = 'failed', error = ${msg}, updated_at = now()
+			WHERE id = ${ledgerRow.id}
+		`;
 	}
 }
 
@@ -274,12 +347,12 @@ export async function beginChallenge(
 		UPDATE game_state SET
 			challenge_status = jsonb_set(
 				challenge_status,
-				${`{${challengeId}}`},
-				CASE
+				${`{${challengeId}}`}::text[],
+				(CASE
 					WHEN (challenge_status->>${challengeId}) = 'cleared'
 					THEN '"cleared"'
 					ELSE '"in_progress"'
-				END
+				END)::jsonb
 			),
 			updated_at = now()
 		WHERE operative_id = ${operativeId}
@@ -340,8 +413,8 @@ export async function submitChallenge(
 			UPDATE game_state SET
 				challenge_status = jsonb_set(
 					challenge_status,
-					${`{${challengeId}}`},
-					'"cleared"'
+					${`{${challengeId}}`}::text[],
+					'"cleared"'::jsonb
 				),
 				updated_at = now()
 			WHERE operative_id = ${operativeId}
