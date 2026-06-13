@@ -84,7 +84,7 @@ function buildSql() {
     // game_state
     if (n.includes('insert into game_state') && n.includes('on conflict')) {
       const id = values[0] as string;
-      if (!_db.game_state.has(id)) _db.game_state.set(id, { operativeId: id, currentAct: 0, challengeStatus: {}, hp: 100, flags: {}, xp: 0, level: 1, energy: 7, energyExhaustedAt: null, loadout: {}, arcId: null, arcSegment: 0, updatedAt: new Date().toISOString() }); return [];
+      if (!_db.game_state.has(id)) _db.game_state.set(id, { operativeId: id, currentAct: 0, challengeStatus: {}, hp: 100, flags: {}, xp: 0, level: 1, energy: 7, energyExhaustedAt: null, loadout: {}, arcId: null, arcSegment: 0, hpRegenAt: null, updatedAt: new Date().toISOString() }); return [];
     }
     // Both the full select (with hp/flags) and the act-only select (maybeAdvanceAct)
     if (n.includes('select current_act') && n.includes('game_state') && n.includes('operative_id')) {
@@ -141,6 +141,16 @@ function buildSql() {
     if (n.includes('update game_state set arc_segment')) {
       const gs = _db.game_state.get(values[1] as string);
       if (gs) { gs.arcSegment = values[0] as number; gs.updatedAt = new Date().toISOString(); }
+      return [];
+    }
+    // hp (B6)
+    if (n.includes('select hp, hp_regen_at from game_state')) {
+      const gs = _db.game_state.get(values[0] as string);
+      return gs ? [{ hp: gs.hp ?? 100, hpRegenAt: gs.hpRegenAt ?? null }] : [];
+    }
+    if (n.includes('update game_state set hp =')) {
+      const gs = _db.game_state.get(values[2] as string);
+      if (gs) { gs.hp = values[0] as number; gs.hpRegenAt = (values[1] as any) ?? null; gs.updatedAt = new Date().toISOString(); }
       return [];
     }
 
@@ -349,6 +359,9 @@ let equip: any, getLoadout: any, getLoadoutStats: any, openChest: any, forge: an
 let getColonyLevel: any, getColonyStatus: any, colonyLevelAtLeast: any, contributeCores: any,
     COLONY_CONTRIBUTORS_PER_LEVEL: any, CORES_REQUIRED_PER_CONTRIBUTION: any;
 let ensureArc: any, getStory: any, advanceStory: any, ARC_IDS: any;
+let bossWindowState: any, availableBosses: any, startBoss: any, resolveBossRoll: any,
+    buyPotion: any, revive: any, getPlayerHp: any, BOSSES: any,
+    MAX_HP: any, POTION_COST: any, REVIVE_COST: any, BOSS_WINDOW_DURATION_MS: any;
 let getChallenge: any;
 let encodeMessage: any, decodeFrame: any, Reassembler: any, MsgType: any;
 let SimChannel: any, VirtualBadge: any;
@@ -369,6 +382,9 @@ beforeAll(async () => {
     await import(`${ROOT}/src/lib/server/engine/colony`));
   ({ ensureArc, getStory, advanceStory, ARC_IDS } =
     await import(`${ROOT}/src/lib/server/engine/director`));
+  ({ bossWindowState, availableBosses, startBoss, resolveBossRoll, buyPotion, revive,
+     getPlayerHp, BOSSES, MAX_HP, POTION_COST, REVIVE_COST, BOSS_WINDOW_DURATION_MS } =
+    await import(`${ROOT}/src/lib/server/engine/boss`));
   ({ getChallenge } = await import(`${ROOT}/src/lib/server/challenges/registry`));
 
   // Load challenge impls — each calls registerChallenge() as a side effect
@@ -1150,5 +1166,74 @@ describe('Director — storylines (B5)', () => {
     _db.colony.level = 5;
     const r = await advanceStory(op.id, '0.1', { '0.1': 'cleared' });
     expect(r.advanced).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUITE 11 — Bosses (B6)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Bosses — timed events (B6)', () => {
+  beforeEach(() => { resetDb(); clearMockRewards(); });
+
+  it('boss window is open at the start of the period, closed after the duration', () => {
+    expect(bossWindowState(0).open).toBe(true);
+    expect(bossWindowState(BOSS_WINDOW_DURATION_MS).open).toBe(false);
+  });
+
+  it('available bosses are gated by colony level', async () => {
+    _db.colony.level = 0;
+    let ids = (await availableBosses()).map((b: any) => b.id);
+    expect(ids).toContain('boss_vienna_titan');
+    expect(ids).not.toContain('boss_deepdish_core');
+    _db.colony.level = 1;
+    ids = (await availableBosses()).map((b: any) => b.id);
+    expect(ids).toContain('boss_deepdish_core');
+  });
+
+  it('startBoss opens a fight in an open window at the right colony level', async () => {
+    const op = await resolveOperative('hw-boss-start');
+    _db.colony.level = 0;
+    const s = await startBoss(op.id, 'boss_vienna_titan', 0);
+    expect(s.challengeId).toBe('boss:boss_vienna_titan');
+  });
+
+  it('startBoss rejects a closed window and a locked boss', async () => {
+    const op = await resolveOperative('hw-boss-gate');
+    _db.colony.level = 0;
+    await expect(startBoss(op.id, 'boss_vienna_titan', BOSS_WINDOW_DURATION_MS)).rejects.toThrow(/window/i);
+    await expect(startBoss(op.id, 'boss_deepdish_core', 0)).rejects.toThrow(/locked/i);
+  });
+
+  it('resolveBossRoll grants loot and persists HP on a win', async () => {
+    const op = await resolveOperative('hw-boss-win');
+    const { openCombat } = await import(`${ROOT}/src/lib/server/engine/combat`);
+    const session = await openCombat({ operativeId: op.id, challengeId: 'boss:boss_vienna_titan', enemyHp: 1, operativeHp: 100, wavesRequired: 1 });
+    const r = await resolveBossRoll(op.id, session.id, 'boss_vienna_titan');
+    expect(r.session.status).toBe('won');
+    expect(r.loot).toBe(BOSSES.boss_vienna_titan.loot);
+    expect(await listCatalogIds(op.id)).toContain(r.loot);
+    expect(r.hp).toBeLessThanOrEqual(100); // HP persisted after the fight
+  });
+
+  it('HP lazily regens to full 30 min after dropping', async () => {
+    const op = await resolveOperative('hw-boss-regen');
+    const gs = _db.game_state.get(op.id)!;
+    gs.hp = 0;
+    gs.hpRegenAt = new Date(Date.now() - 31 * 60 * 1000).toISOString();
+    expect(await getPlayerHp(op.id)).toBe(MAX_HP);
+  });
+
+  it('potion and revive restore HP and burn onions', async () => {
+    const op = await resolveOperative('hw-boss-heal');
+    _db.operatives.get(op.id)!.username = 'healer';
+    _db.game_state.get(op.id)!.hp = 5;
+    const hpP = await buyPotion(op.id, `${op.id}:potion:1`);
+    expect(hpP).toBe(MAX_HP);
+    expect(getMockRewards().filter((r: any) => r.externalId === `${op.id}:potion:1`)[0].amount).toBe(POTION_COST);
+    _db.game_state.get(op.id)!.hp = 0;
+    const hpR = await revive(op.id, `${op.id}:revive:1`);
+    expect(hpR).toBe(MAX_HP);
+    expect(getMockRewards().filter((r: any) => r.externalId === `${op.id}:revive:1`)[0].amount).toBe(REVIVE_COST);
   });
 });

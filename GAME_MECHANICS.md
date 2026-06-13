@@ -223,7 +223,18 @@ constant in code so it can be retuned without structural change.
 | XP per level | 100 (level = 1 + ⌊xp/100⌋) | `engine/index.ts` `XP_PER_LEVEL` |
 | Colony contributors per level (`N`) | 5 | `engine/colony.ts` `COLONY_CONTRIBUTORS_PER_LEVEL` |
 | Cores per contribution | 3 | `engine/colony.ts` `CORES_REQUIRED_PER_CONTRIBUTION` |
-| Player HP full-regen delay | TBD | B6 |
+| Max player HP | 100 | `engine/boss.ts` `MAX_HP` |
+| Player HP full-regen delay | 30 min (lazy) | `engine/boss.ts` `HP_REGEN_MS` |
+| Potion / revive price (onions) | 3 / 8 | `engine/boss.ts` `POTION_COST` / `REVIVE_COST` |
+| Boss window period / duration | 1 h / 15 min | `engine/boss.ts` `BOSS_WINDOW_*` |
+
+**Boss model (B6 decision):** PERSONAL INSTANCE (the spec's v1 fallback) — each
+player fights their own boss instance during the global window; individual loot.
+Bosses don't cost energy; gated by the boss window + Colony level. Fights reuse
+the combat engine (`challengeId = boss:<id>`); equipped attack/defense apply.
+Player HP is persistent (`game_state.hp`, max 100) with 30-min lazy regen;
+potions/revives restore it for onions. Shared-HP raids + true mid-session
+healing are deferred.
 
 **Colony meter location (B4 decision):** a dedicated `colony_state` singleton +
 `colony_contributions` ledger is the source of truth (cleanest for discrete

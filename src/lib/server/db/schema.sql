@@ -82,6 +82,9 @@ ALTER TABLE game_state ADD COLUMN IF NOT EXISTS loadout JSONB NOT NULL DEFAULT '
 -- B5: storyline director — assigned arc + current segment index.
 ALTER TABLE game_state ADD COLUMN IF NOT EXISTS arc_id      TEXT;
 ALTER TABLE game_state ADD COLUMN IF NOT EXISTS arc_segment INTEGER NOT NULL DEFAULT 0;
+-- B6: persistent player HP regen. hp_regen_at is set when hp drops below max;
+-- on read, 30 min later hp lazily refills to full (mirrors energy).
+ALTER TABLE game_state ADD COLUMN IF NOT EXISTS hp_regen_at TIMESTAMPTZ;
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- inventory: items, credentials, and prompt-fragments an operative owns.
