@@ -71,7 +71,7 @@ interface ParsedArgs {
 	positional: string[];
 	server: string;
 	key: string | undefined;
-	hw: string;
+	hw: string | undefined;
 	onion: number | undefined;
 	timeout: number;
 	verbose: boolean;
@@ -86,7 +86,9 @@ function parseArgs(argv: string[]): ParsedArgs {
 		positional: [],
 		server: process.env['GAME_SERVER_URL'] ?? 'http://localhost:5173',
 		key: process.env['BEACON_API_KEY'],
-		hw: 'sim-badge-01',
+		// Unset by default → the test runner generates a fresh operative per run.
+		// Pass --hw (or SIM_HARDWARE_ID) to pin a stable badge identity.
+		hw: process.env['SIM_HARDWARE_ID'],
 		onion: undefined,
 		timeout: 15_000,
 		verbose: false,
@@ -295,7 +297,7 @@ COMMANDS
 OPTIONS
   --server <url>     Game server URL [default: http://localhost:5173]
   --key <key>        BEACON_API_KEY bearer token
-  --hw <id>          Virtual badge hardware id [default: sim-badge-01]
+  --hw <id>          Virtual badge hardware id [default: fresh per run]
   --onion <n>        Virtual badge onion id (numeric)
   --timeout <ms>     Request timeout [default: 15000]
   --hello <ms>       Beacon hello broadcast period [default: 5000]

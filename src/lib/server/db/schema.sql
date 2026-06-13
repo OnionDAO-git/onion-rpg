@@ -73,6 +73,10 @@ CREATE TABLE IF NOT EXISTS game_state (
 -- B1: experience points + derived level (level = 1 + floor(xp / 100)).
 ALTER TABLE game_state ADD COLUMN IF NOT EXISTS xp    INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE game_state ADD COLUMN IF NOT EXISTS level INTEGER NOT NULL DEFAULT 1;
+-- B2: energy (lazy refill). `energy_exhausted_at` is set when energy hits 0;
+-- on read, 30 min later energy refills to full in one shot, then it is cleared.
+ALTER TABLE game_state ADD COLUMN IF NOT EXISTS energy              INTEGER NOT NULL DEFAULT 7;
+ALTER TABLE game_state ADD COLUMN IF NOT EXISTS energy_exhausted_at TIMESTAMPTZ;
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- inventory: items, credentials, and prompt-fragments an operative owns.

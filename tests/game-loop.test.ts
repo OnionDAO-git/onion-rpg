@@ -82,7 +82,7 @@ function buildSql() {
     // game_state
     if (n.includes('insert into game_state') && n.includes('on conflict')) {
       const id = values[0] as string;
-      if (!_db.game_state.has(id)) _db.game_state.set(id, { operativeId: id, currentAct: 0, challengeStatus: {}, hp: 100, flags: {}, xp: 0, level: 1, updatedAt: new Date().toISOString() }); return [];
+      if (!_db.game_state.has(id)) _db.game_state.set(id, { operativeId: id, currentAct: 0, challengeStatus: {}, hp: 100, flags: {}, xp: 0, level: 1, energy: 7, energyExhaustedAt: null, updatedAt: new Date().toISOString() }); return [];
     }
     // Both the full select (with hp/flags) and the act-only select (maybeAdvanceAct)
     if (n.includes('select current_act') && n.includes('game_state') && n.includes('operative_id')) {
@@ -104,6 +104,17 @@ function buildSql() {
     if (n.includes('update game_state set') && n.includes('xp =')) {
       const id = values[values.length - 1] as string; const amount = values[0] as number; const gs = _db.game_state.get(id);
       if (gs) { gs.xp = (gs.xp ?? 0) + amount; gs.level = Math.max(1, 1 + Math.floor(gs.xp / 100)); gs.updatedAt = new Date().toISOString(); } return [];
+    }
+    // energy: SELECT energy, energy_exhausted_at; and UPDATE ... energy = $, energy_exhausted_at = $
+    if (n.includes('select energy, energy_exhausted_at from game_state')) {
+      const gs = _db.game_state.get(values[0] as string);
+      return gs ? [{ energy: gs.energy ?? 7, energyExhaustedAt: gs.energyExhaustedAt ?? null }] : [];
+    }
+    if (n.includes('update game_state') && n.includes('energy_exhausted_at')) {
+      // values = [energy, exhaustedAt, operativeId, (cost?)] — operativeId is always values[2].
+      const id = values[2] as string; const gs = _db.game_state.get(id);
+      if (gs) { gs.energy = values[0] as number; gs.energyExhaustedAt = (values[1] as any) ?? null; gs.updatedAt = new Date().toISOString(); }
+      return gs ? [{ energy: gs.energy }] : [];
     }
 
     // inventory
@@ -268,6 +279,7 @@ let resolveOperative: any, beginChallenge: any, submitChallenge: any,
 let openCombat: any, applyRoll: any;
 let grantItem: any, listCatalogIds: any;
 let getGauge: any;
+let getEnergy: any, spendEnergy: any, skipEnergyWithOnions: any, ENERGY_SKIP_COST: any, MAX_ENERGY: any;
 let getChallenge: any;
 let encodeMessage: any, decodeFrame: any, Reassembler: any, MsgType: any;
 let SimChannel: any, VirtualBadge: any;
@@ -279,6 +291,8 @@ beforeAll(async () => {
   ({ openCombat, applyRoll } = await import(`${ROOT}/src/lib/server/engine/combat`));
   ({ grantItem, listCatalogIds } = await import(`${ROOT}/src/lib/server/engine/inventory`));
   ({ getGauge } = await import(`${ROOT}/src/lib/server/onion/gauge`));
+  ({ getEnergy, spendEnergy, skipEnergyWithOnions, ENERGY_SKIP_COST, MAX_ENERGY } =
+    await import(`${ROOT}/src/lib/server/engine/energy`));
   ({ getChallenge } = await import(`${ROOT}/src/lib/server/challenges/registry`));
 
   // Load challenge impls — each calls registerChallenge() as a side effect
@@ -806,5 +820,71 @@ describe('Reward ledger idempotency', () => {
     await grantItem(op.id, 'grid_credential');
     const ids = await listCatalogIds(op.id);
     expect(ids.filter((id: string) => id === 'grid_credential').length).toBe(1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUITE 7 — Energy (B2)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Energy — pacing gate (B2)', () => {
+  beforeEach(() => { resetDb(); clearMockRewards(); });
+
+  it('new operative starts at full energy', async () => {
+    const op = await resolveOperative('hw-en-new');
+    const e = await getEnergy(op.id);
+    expect(e.energy).toBe(MAX_ENERGY);
+    expect(e.max).toBe(7);
+    expect(e.refillsInMs).toBeNull();
+  });
+
+  it('spendEnergy decrements and reports ok', async () => {
+    const op = await resolveOperative('hw-en-spend');
+    const r = await spendEnergy(op.id, 2);
+    expect(r.ok).toBe(true);
+    expect(r.energy).toBe(5);
+    expect((await getEnergy(op.id)).energy).toBe(5);
+  });
+
+  it('spendEnergy refuses when short (no change)', async () => {
+    const op = await resolveOperative('hw-en-short');
+    _db.game_state.get(op.id)!.energy = 1;
+    const r = await spendEnergy(op.id, 2);
+    expect(r.ok).toBe(false);
+    expect(r.energy).toBe(1);
+    expect((await getEnergy(op.id)).energy).toBe(1);
+  });
+
+  it('beginChallenge costs 1 energy', async () => {
+    const op = await resolveOperative('hw-en-begin');
+    await beginChallenge(op.id, '0.1');
+    expect((await getEnergy(op.id)).energy).toBe(MAX_ENERGY - 1);
+  });
+
+  it('beginChallenge is blocked when out of energy', async () => {
+    const op = await resolveOperative('hw-en-empty');
+    _db.game_state.get(op.id)!.energy = 0;
+    await expect(beginChallenge(op.id, '0.1')).rejects.toThrow(/out of energy/i);
+  });
+
+  it('lazy refill: full again 30 min after hitting 0', async () => {
+    const op = await resolveOperative('hw-en-refill');
+    const gs = _db.game_state.get(op.id)!;
+    gs.energy = 0;
+    gs.energyExhaustedAt = new Date(Date.now() - 31 * 60 * 1000).toISOString(); // 31 min ago
+    const e = await getEnergy(op.id);
+    expect(e.energy).toBe(MAX_ENERGY);
+    expect(e.refillsInMs).toBeNull();
+  });
+
+  it('onion skip refills to full and burns exactly ENERGY_SKIP_COST once', async () => {
+    const op = await resolveOperative('hw-en-skip');
+    _db.operatives.get(op.id)!.username = 'test-skip';
+    _db.game_state.get(op.id)!.energy = 0;
+    const e = await skipEnergyWithOnions(op.id, `${op.id}:energy:skip:1`);
+    expect(e.energy).toBe(MAX_ENERGY);
+    const burns = getMockRewards().filter((r: any) => r.externalId === `${op.id}:energy:skip:1`);
+    expect(burns.length).toBe(1);
+    expect(burns[0].amount).toBe(ENERGY_SKIP_COST);
   });
 });

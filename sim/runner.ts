@@ -130,7 +130,13 @@ export async function runScenario(
 	// (fine for serial test runs) and document that --isolate is for future use.
 	void peer; // placeholder; isolation handled differently below
 
-	const badge = new VirtualBadge(opts.hardwareId ?? 'sim-badge-01', {
+	// Each scenario run uses a FRESH operative by default so persistent
+	// per-player state (energy, progression) can't make repeated runs flaky.
+	// Pass --hw to pin a stable hardware id (real-badge-like; state persists).
+	const hardwareId =
+		opts.hardwareId ??
+		`sim-${challengeId}-${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
+	const badge = new VirtualBadge(hardwareId, {
 		timeoutMs: opts.timeoutMs ?? 15_000,
 		log: verboseLog
 	});

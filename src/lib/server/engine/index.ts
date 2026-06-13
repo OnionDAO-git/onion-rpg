@@ -14,6 +14,7 @@ import { sql } from '../db/index';
 import { getChallenge, challengesForAct } from '../challenges/registry';
 import { grantItem, listCatalogIds, hasAll } from './inventory';
 import { findSession } from './combat';
+import { spendEnergy, MAX_ENERGY } from './energy';
 import { createRequest } from '../onion/client';
 import type {
 	Operative,
@@ -357,6 +358,16 @@ export async function beginChallenge(
 	if (!allowed) {
 		throw new Error(
 			`cannot begin ${challengeId}: requires ${challenge.requires.join(', ')}`
+		);
+	}
+
+	// Energy gate (B2): each interaction costs 1 energy. Checked AFTER the
+	// credential gate so a `requires` failure never burns energy. Bosses will be
+	// exempt once they land (B6); regular challenges always cost 1.
+	const spent = await spendEnergy(operativeId, 1);
+	if (!spent.ok) {
+		throw new Error(
+			`out of energy for ${challengeId} (${spent.energy}/${MAX_ENERGY}) — wait for refill or skip`
 		);
 	}
 
